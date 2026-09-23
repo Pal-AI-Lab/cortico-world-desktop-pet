@@ -1,0 +1,64 @@
+{
+  "name": "cortico-world-desktop-pet",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cortico World: a desktop pet that talks in bubbles, asks with options, walks, emotes, and hears you through whisper.cpp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Phantivia/cortico-world-desktop-pet.git"
+  },
+  "homepage": "https://github.com/Phantivia/cortico-world-desktop-pet#readme",
+  "bugs": {
+    "url": "https://github.com/Phantivia/cortico-world-desktop-pet/issues"
+  },
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "desktop-pet",
+    "whisper"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.5.0",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./web/*": "./web/*",
+    "./host/*": "./host/*"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 5,
+    "consoleClient": "dist/console.js",
+    "consoleStyle": "dist/console.css"
+  },
+  "files": [
+    "src",
+    "web",
+    "host",
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-console.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "opencc-js": "^1.4.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "electron": "44.4.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

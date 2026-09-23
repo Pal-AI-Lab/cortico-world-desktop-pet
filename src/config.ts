@@ -1,0 +1,133 @@
+/** Config section `worlds.desktop-pet`, its defaults and the console config groups. */
+import type { ConfigGroup } from 'cortico/core/config-schema.ts';
+import type { WorldSection } from 'cortico/world.ts';
+import type { SegmentConfig } from './asr/segmenter.ts';
+
+export const DESKTOP_PET_ID = 'desktop-pet';
+
+/** Accessory choice as the page's `normalizeSkin` reads it; unknown values fall back to defaults there. */
+export interface PetSkin {
+  palette: string;
+  head: string;
+  side: string;
+  glasses: string;
+  neck: string;
+  colors: Record<string, { main: string; acc: string }>;
+}
+
+export type RoamMode = 'free' | 'calm' | 'off';
+export type TouchTrigger = 'debounce' | 'piggyback';
+export type WhisperModel = 'base-q5_1' | 'small-q5_1' | 'large-v3-turbo-q5_0';
+
+export interface DesktopPetConfigSection extends WorldSection {
+  /** Local server for the pet page, the dressing page and the pet window's socket. */
+  port: number;
+  /** How events name the person at the computer. */
+  user: string;
+  window: {
+    /** Open the pet window when the World starts. */
+    enabled: boolean;
+    /** Electron executable; empty uses CORTICO_DESKTOP_PET_HOST, then the managed runtime. */
+    electronFile: string;
+    /** Figure size on screen, 1 = 256 logo units drawn at 107 px. */
+    scale: number;
+  };
+  roam: RoamMode;
+  sound: boolean;
+  skin: PetSkin;
+  touch: {
+    /** Clicks, petting and throws become events. */
+    enabled: boolean;
+    trigger: TouchTrigger;
+  };
+  asr: {
+    enabled: boolean;
+    /** Transcription endpoint (OpenAI-compatible `/audio/transcriptions`); the managed whisper.cpp server listens here. */
+    baseUrl: string;
+    /** Start the managed whisper.cpp server when nothing answers at `baseUrl`. */
+    manageServer: boolean;
+    model: WhisperModel;
+    /** whisper-server executable; empty uses the managed runtime. */
+    serverFile: string;
+    /** ggml model file; empty uses the managed download of `model`. */
+    modelFile: string;
+    language: string;
+    /** 0 = whisper.cpp's default. */
+    threads: number;
+    simplified: boolean;
+    timeoutMs: number;
+    segment: SegmentConfig;
+  };
+}
+
+export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
+  enabled: false,
+  port: 7797,
+  user: '主人',
+  window: { enabled: true, electronFile: '', scale: 1 },
+  roam: 'calm',
+  sound: true,
+  skin: {
+    palette: 'mint', head: 'none', side: 'none', glasses: 'none', neck: 'none',
+    colors: { head: { main: 'body', acc: 'eye' }, side: { main: 'eye', acc: 'eye' }, glasses: { main: 'body', acc: 'eye' }, neck: { main: 'eye', acc: 'eye' } },
+  },
+  touch: { enabled: true, trigger: 'debounce' },
+  asr: {
+    enabled: true,
+    baseUrl: 'http://127.0.0.1:8794/v1',
+    manageServer: true,
+    model: 'small-q5_1',
+    serverFile: '',
+    modelFile: '',
+    language: 'zh',
+    threads: 0,
+    simplified: true,
+    timeoutMs: 20_000,
+    segment: { thresholdDb: -42, minSpeechMs: 180, dispatchSilenceMs: 250, silenceMs: 600, maxUtteranceMs: 15_000, preRollMs: 320, minUtteranceMs: 350 },
+  },
+};
+
+const K = `worlds.${DESKTOP_PET_ID}`;
+
+export const DESKTOP_PET_CONFIG_GROUP: ConfigGroup = {
+  id: `world:${DESKTOP_PET_ID}`,
+  owner: `world:${DESKTOP_PET_ID}`,
+  schema: {
+    type: 'object',
+    title: '桌宠',
+    properties: {
+      [`${K}.user`]: { type: 'string', title: '怎么称呼你', description: '语音、打字和互动事件里用这个名字指代你。', 'x-hot': true },
+      [`${K}.roam`]: { type: 'string', title: '自由活动', enum: ['free', 'calm', 'off'], description: 'free 常走动;calm 多待着;off 只做被要求的动作。', 'x-hot': true },
+      [`${K}.sound`]: { type: 'boolean', title: '音效', 'x-hot': true },
+      [`${K}.window.enabled`]: { type: 'boolean', title: '启动时打开桌宠窗口', 'x-hot': false },
+      [`${K}.window.scale`]: { type: 'number', title: '大小', minimum: .5, maximum: 2, multipleOf: .05, 'x-hot': true },
+      [`${K}.window.electronFile`]: { type: 'string', title: 'Electron 程序', description: '留空时依次用 CORTICO_DESKTOP_PET_HOST 和面板里安装的运行时。', 'x-path': { kind: 'file' }, 'x-hot': false },
+      [`${K}.port`]: { type: 'integer', title: '页面端口', minimum: 1024, maximum: 65535, description: '被占用时向上顺延。', 'x-hot': false },
+      [`${K}.touch.enabled`]: { type: 'boolean', title: '互动发成事件', description: '戳、摸、拎起来甩出去。', 'x-hot': true },
+      [`${K}.touch.trigger`]: { type: 'string', title: '互动事件投递', enum: ['debounce', 'piggyback'], description: 'debounce 攒一小批后唤醒;piggyback 只跟着下一次唤醒一起送。', 'x-hot': true },
+    },
+  },
+};
+
+export const DESKTOP_PET_ASR_CONFIG_GROUP: ConfigGroup = {
+  id: `world:${DESKTOP_PET_ID}:asr`,
+  owner: `world:${DESKTOP_PET_ID}`,
+  schema: {
+    type: 'object',
+    title: '语音输入',
+    properties: {
+      [`${K}.asr.enabled`]: { type: 'boolean', title: '听麦克风', 'x-hot': true },
+      [`${K}.asr.model`]: { type: 'string', title: '识别模型', enum: ['base-q5_1', 'small-q5_1', 'large-v3-turbo-q5_0'], description: 'base 57 MB 快;small 181 MB 中文更准;turbo 547 MB 最准也最慢。换了要重启识别服务。', 'x-hot': false },
+      [`${K}.asr.language`]: { type: 'string', title: '语言', description: 'ISO 639-1,auto 让模型自己判断。', 'x-hot': true },
+      [`${K}.asr.baseUrl`]: { type: 'string', title: '识别端点', description: 'OpenAI 兼容的 /audio/transcriptions 所在的 /v1。', 'x-hot': false },
+      [`${K}.asr.manageServer`]: { type: 'boolean', title: '托管 whisper.cpp 服务', description: '端点没有服务在跑时自己启动一个。', 'x-hot': false },
+      [`${K}.asr.serverFile`]: { type: 'string', title: 'whisper-server 程序', description: '留空用面板里安装的运行时。', 'x-path': { kind: 'file' }, 'x-hot': false },
+      [`${K}.asr.modelFile`]: { type: 'string', title: '模型文件', description: '留空用面板里下载的模型。', 'x-path': { kind: 'file', extensions: ['.bin'] }, 'x-hot': false },
+      [`${K}.asr.threads`]: { type: 'integer', title: 'CPU 线程', minimum: 0, maximum: 64, description: '0 = whisper.cpp 默认。', 'x-hot': false },
+      [`${K}.asr.simplified`]: { type: 'boolean', title: '转成简体', 'x-hot': true },
+      [`${K}.asr.segment.thresholdDb`]: { type: 'number', title: '说话门槛', minimum: -80, maximum: 0, 'x-suffix': 'dBFS', 'x-hot': true },
+      [`${K}.asr.segment.silenceMs`]: { type: 'integer', title: '一句结束的静音', minimum: 200, maximum: 5000, 'x-suffix': 'ms', 'x-hot': true },
+      [`${K}.asr.segment.maxUtteranceMs`]: { type: 'integer', title: '一句最长', minimum: 2000, maximum: 60000, 'x-suffix': 'ms', 'x-hot': true },
+    },
+  },
+};

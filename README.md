@@ -1,0 +1,87 @@
+# cortico-world-desktop-pet
+
+Owner: `src/definition.ts`
+
+[Cortico](https://github.com/Pal-AI-Lab/Cortico) 的桌宠 World,以独立 npm 包发布。
+
+bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两条短腿。它用气泡说话、用选项提问、
+沿任务栏走动、做表情和动作;人可以对它说话(内置 whisper.cpp 识别)、打字、点选项、戳它、摸它、
+把它拎起来甩出去,这些都作为事件送回 bot。
+
+## 工具
+
+| 工具 | 作用 | 回执 |
+|---|---|---|
+| `pet_say(script)` | 冒气泡说话;`【词】` 先做动作再换新气泡,`<词>` 打字到那里时做 | 立即返回,报约显示多久、前面排了多久 |
+| `pet_ask(question, options, allowOwnAnswer)` | 提问气泡,最多 3 个选项,默认再加一格自己写 | 立即返回;回答以 `[回答]` 事件送达 |
+| `pet_walk_to(to, run)` | 走(跑)到屏幕横向 0–1 处,或 `left` `center` `right` `cursor` | 走到或被打断才返回,最多 30 秒 |
+| `pet_act(actions)` | 不说话,依次做一串表情或动作 | 立即返回;`sit` `sleep` 保持到下个动作 |
+
+表情和动作的词表在 `src/script.ts`,英文词与中文名都认;环境提示词 `src/ENV_PROMPT.md` 把它渲染成表格。
+
+## 事件
+
+| `type` | 正文 | 投递 |
+|---|---|---|
+| `desktop-pet.speech` | `[语音] 主人:…` | flush |
+| `desktop-pet.message` | `[打字] 主人:…`(右键「说点什么」或双击) | flush |
+| `desktop-pet.answer` | `[回答] 主人回答「问题」:选了第 2 项「…」` / 自己写的 / 关掉没答 | flush,关掉没答为 debounce |
+| `desktop-pet.touch` | `[互动] 主人戳了你 3 下` / 摸了摸 / 拎起来甩了出去 / 摔晕 | `worlds.desktop-pet.touch.trigger`,默认 debounce |
+
+同一种互动 2.5 秒内连着来,并成一条带次数的事件。「主人」取自 `worlds.desktop-pet.user`。
+
+## 桌宠窗口
+
+World 在 `127.0.0.1:7797`(被占向上顺延)起一个页面服务:`/pet` 是桌宠本身,`/dress` 是装扮页。
+桌宠窗口是一个 Electron 进程(`host/electron-main.cjs`):透明、无边框、置顶,盖住主屏幕的工作区,
+鼠标只在身体、气泡和右键菜单上时才接收点击,其余位置点击穿透。托盘图标可以显示、隐藏、关闭它。
+World 进程退出后窗口在 2 秒内自己关掉。
+
+用哪个 Electron,依次是:
+
+1. 环境变量 `CORTICO_DESKTOP_PET_HOST`:内嵌应用给的 JSON 数组命令,末尾追加 `--pet-url=<url>`。
+   应用在自己的主进程里调 `require('cortico-world-desktop-pet/host/electron-main.cjs').runPetHost({ url, parentPid })`;
+2. 配置 `worlds.desktop-pet.window.electronFile`;
+3. 「桌宠」面板安装的托管运行时(Electron 44.4.4,装到 `<运行时根>/electron/44.4.4/`);
+4. 本包能解析到的 `electron` 包。
+
+没有窗口时,在浏览器里打开 `/pet` 也能看到桌宠;窗口连着时浏览器标签页只旁观,不接收指令。
+
+## 语音输入
+
+桌宠窗口里的页面用麦克风收音,16 kHz 单声道 PCM 经 WebSocket 送到 World,按能量门限切句
+(`src/asr/segmenter.ts`),交给 OpenAI 兼容的 `/v1/audio/transcriptions` 识别,繁体转简体、
+挡掉已知幻觉后作为 `desktop-pet.speech` 投递。说话时桌宠歪头倾听,虚线气泡里显示听到的字。
+
+识别端点上已经有服务在跑就直接用;没有且 `asr.manageServer` 开着,World 自己启动 whisper.cpp 的
+`whisper-server`。「语音输入」面板负责下载:
+
+- 程序:whisper.cpp `b5130` 的发布包(Windows x64 CPU 版 8.6 MB;Linux 用 ubuntu 包),解到
+  `<运行时根>/whisper.cpp/b5130/`。macOS 没有预编译包,用 `brew install whisper-cpp` 后把
+  `whisper-server` 填进 `asr.serverFile`;
+- 模型:`ggml-base-q5_1`(57 MB)、`ggml-small-q5_1`(181 MB,默认)、`ggml-large-v3-turbo-q5_0`(547 MB),
+  从 HuggingFace 固定 revision 下到 `<模型根>/desktop-pet/`,按仓库公布的 SHA-256 校验。
+
+下载都先写 `.partial`,完整后才改名到位。自备的程序和模型填 `asr.serverFile` / `asr.modelFile` 即可。
+
+## 安装
+
+```bash
+corepack pnpm install
+corepack pnpm build        # 面板产物 dist/,不进版本库
+```
+
+然后在 Cortico 控制台「扩展」页安装(填本目录绝对路径,或 npm 包名 `cortico-world-desktop-pet`),
+整进程重启。bot 的 `declares` 里加上 `desktop-pet`,或在「World 总览」启用它。
+
+## 开发
+
+```bash
+corepack pnpm test
+corepack pnpm typecheck
+npx tsx scripts/check-voice.ts <whisper-server> <ggml 模型> <语音.wav>   # 连真 whisper.cpp 手动检查
+```
+
+`tsconfig.json` 与 `vitest.config.ts` 把 `cortico/*` 指到同级的框架 checkout(`../BOT/src/`);
+装进 Cortico 运行时由框架的模块钩子解析。`web/pet-core.js` 是身体本身(造型、表情、配件、合成音效、
+动作模拟),桌宠页、装扮页都从它构建,不依赖 World。
