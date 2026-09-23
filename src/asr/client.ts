@@ -64,7 +64,7 @@ function textOf(body: string): string {
 export async function transcribe(pcm: Int16Array, sampleRate: number, opts: TranscribeOptions): Promise<TranscribeResult> {
   const started = Date.now();
   const form = new FormData();
-  form.append('file', new Blob([wavFromPcm16(pcm, sampleRate) as BlobPart], { type: 'audio/wav' }), 'speech.wav');
+  form.append('file', new Blob([wavFromPcm16(pcm, sampleRate).buffer as ArrayBuffer], { type: 'audio/wav' }), 'speech.wav');
   form.append('model', opts.model);
   form.append('response_format', 'json');
   // temperature 0: a few missing characters beat invented ones
