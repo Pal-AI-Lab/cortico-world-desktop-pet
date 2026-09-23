@@ -11,6 +11,83 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, session, shell } = require('electron');
 const { join } = require('node:path');
 
+/** Most pixels one backdrop sample returns. */
+const BACKDROP_SAMPLES = 1500;
+
+/**
+ * GDI calls for copying a small patch of the screen, or null off Windows or when koffi does not
+ * load. A patch through BitBlt costs about a millisecond; a desktopCapturer frame of the whole
+ * screen stalls the cursor.
+ */
+const gdi = (() => {
+  if (process.platform !== 'win32') return null;
+  try {
+    const koffi = require('koffi');
+    const user32 = koffi.load('user32.dll'), gdi32 = koffi.load('gdi32.dll');
+    return {
+      GetDC: user32.func('void * __stdcall GetDC(void *hwnd)'),
+      ReleaseDC: user32.func('int __stdcall ReleaseDC(void *hwnd, void *hdc)'),
+      CreateCompatibleDC: gdi32.func('void * __stdcall CreateCompatibleDC(void *hdc)'),
+      CreateCompatibleBitmap: gdi32.func('void * __stdcall CreateCompatibleBitmap(void *hdc, int w, int h)'),
+      SelectObject: gdi32.func('void * __stdcall SelectObject(void *hdc, void *obj)'),
+      StretchBlt: gdi32.func('int __stdcall StretchBlt(void *dst, int dx, int dy, int dw, int dh, void *src, int sx, int sy, int sw, int sh, uint32_t rop)'),
+      GetDIBits: gdi32.func('int __stdcall GetDIBits(void *hdc, void *hbm, uint32_t start, uint32_t lines, void *bits, void *bmi, uint32_t usage)'),
+      DeleteObject: gdi32.func('int __stdcall DeleteObject(void *obj)'),
+      DeleteDC: gdi32.func('int __stdcall DeleteDC(void *hdc)'),
+    };
+  } catch {
+    return null;
+  }
+})();
+
+/** `w`×`h` screen pixels from (x, y) in physical pixels, shrunk to `ow`×`oh`, as top-down BGRA. */
+function grabScreen(x, y, w, h, ow, oh) {
+  const screenDc = gdi.GetDC(null), memDc = gdi.CreateCompatibleDC(screenDc), bmp = gdi.CreateCompatibleBitmap(screenDc, ow, oh);
+  try {
+    const old = gdi.SelectObject(memDc, bmp);
+    const SRCCOPY = 0x00CC0020;
+    const ok = gdi.StretchBlt(memDc, 0, 0, ow, oh, screenDc, x, y, w, h, SRCCOPY);
+    gdi.SelectObject(memDc, old);
+    if (!ok) return null;
+    // BITMAPINFOHEADER: 32-bit, uncompressed, negative height for top-down rows
+    const bmi = Buffer.alloc(44);
+    bmi.writeUInt32LE(40, 0); bmi.writeInt32LE(ow, 4); bmi.writeInt32LE(-oh, 8); bmi.writeUInt16LE(1, 12); bmi.writeUInt16LE(32, 14);
+    const bits = Buffer.alloc(ow * oh * 4);
+    return gdi.GetDIBits(memDc, bmp, 0, oh, bits, bmi, 0) === oh ? bits : null;
+  } finally {
+    gdi.DeleteObject(bmp); gdi.DeleteDC(memDc); gdi.ReleaseDC(null, screenDc);
+  }
+}
+
+/**
+ * Pixels of the primary display under `rect`, leaving out those inside any of `skip`; both in
+ * page coordinates (DIP, relative to the work area the window covers). The pet window may show
+ * in the copy, so the page skips its own figure and bubbles. Returns a flat
+ * [r, g, b, r, g, b, …] of at most BACKDROP_SAMPLES pixels, [] when this copy failed, or null
+ * where the screen cannot be read cheaply at all.
+ */
+function sampleBackdrop({ rect, skip = [] }) {
+  if (!gdi) return null;
+  if (!rect || !(rect.width > 0) || !(rect.height > 0)) return [];
+  const d = screen.getPrimaryDisplay(), sf = d.scaleFactor;
+  // the primary display sits at the origin in both DIP and physical pixels
+  const x = Math.round((d.workArea.x + rect.x) * sf), y = Math.round((d.workArea.y + rect.y) * sf);
+  const w = Math.max(1, Math.round(rect.width * sf)), h = Math.max(1, Math.round(rect.height * sf));
+  const step = Math.max(1, Math.sqrt(w * h / BACKDROP_SAMPLES));
+  const ow = Math.max(1, Math.round(w / step)), oh = Math.max(1, Math.round(h / step));
+  const bits = grabScreen(x, y, w, h, ow, oh);
+  if (!bits) return [];
+  const out = [];
+  for (let j = 0; j < oh; j++) for (let i = 0; i < ow; i++) {
+    const px = rect.x + (i + .5) * rect.width / ow, py = rect.y + (j + .5) * rect.height / oh;
+    if (skip.some((r) => px >= r.x && px < r.x + r.width && py >= r.y && py < r.y + r.height)) continue;
+    const k = (j * ow + i) * 4;
+    // BGRA
+    out.push(bits[k + 2], bits[k + 1], bits[k]);
+  }
+  return out;
+}
+
 /** 32×32 tray icon drawn in code: the C outline and two ring eyes, white on the brand green. */
 function trayIcon() {
   const n = 32, buf = Buffer.alloc(n * n * 4);
@@ -78,6 +155,9 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
   ipcMain.on('pet:focus', () => { if (win) win.focus(); });
   ipcMain.on('pet:hide', () => { if (win) win.hide(); });
   ipcMain.on('pet:openDress', () => openDress());
+  ipcMain.handle('pet:sampleBackdrop', (_e, query) => {
+    try { return sampleBackdrop(query || {}); } catch { return []; }
+  });
 
   app.whenReady().then(() => {
     session.defaultSession.setPermissionRequestHandler((wc, permission, done) => {

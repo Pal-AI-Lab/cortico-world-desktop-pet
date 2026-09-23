@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('petHost', {
   focus: () => ipcRenderer.send('pet:focus'),
   hide: () => ipcRenderer.send('pet:hide'),
   openDress: () => ipcRenderer.send('pet:openDress'),
+  /** Screen pixels behind `rect`, minus `skip` rects (page coordinates), as a flat [r, g, b, …]; null where the screen cannot be read. */
+  sampleBackdrop: (rect, skip) => ipcRenderer.invoke('pet:sampleBackdrop', { rect, skip }),
 });

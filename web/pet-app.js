@@ -8,7 +8,7 @@
  * window ignores the mouse except over the figure, a bubble, the menu or the hover buttons.
  * Colors follow the World's `theme` through `data-theme` on the root element.
  */
-import { applyTheme, createPet, createSfx, clamp, f, mini, normalizeSkin, skinCss, EXPRESSIONS, ICONS } from './pet-core.js';
+import { applyTheme, createPet, createSfx, clamp, f, mini, normalizeSkin, skinCss, EXPRESSIONS, HEAD_TOP, ICONS } from './pet-core.js';
 
 const $ = (s) => document.querySelector(s);
 const host = window.petHost || null;
@@ -568,6 +568,78 @@ function layout() {
   }
 }
 
+/* ---------- backdrop: a light gray halo when the body melts into what is behind it ---------- */
+/** Seconds between looks at the screen around the body. */
+const BACKDROP_EVERY = .8;
+/** OKLab distance under which a backdrop pixel counts as the body's color. */
+const SAME_COLOR = .2;
+/** Share of such pixels around the body that turns the halo on, and the share it turns off below. */
+const HALO_ON = .35, HALO_OFF = .2;
+const petG = $('#pet'), haloFlood = $('#haloFlood');
+// a window host too old to sample the screen keeps the halo on; a browser tab draws its own wall
+const backdrop = { on: !!host && !host.sampleBackdrop, fixed: !!host && !host.sampleBackdrop, k: 0, busy: false, next: 0 };
+
+const lin = (c) => (c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4);
+function oklab(r, g, b) {
+  r = lin(r / 255); g = lin(g / 255); b = lin(b / 255);
+  const l = Math.cbrt(.4122214708 * r + .5363325363 * g + .0514459929 * b);
+  const m = Math.cbrt(.2119034982 * r + .6806995451 * g + .1073969566 * b);
+  const s = Math.cbrt(.0883024619 * r + .2817188376 * g + .6299787005 * b);
+  return [.2104542553 * l + .793617785 * m - .0040720468 * s, 1.9779984951 * l - 2.428592205 * m + .4505937099 * s, .0259040371 * l + .7827717662 * m - .808675766 * s];
+}
+/** The body's color as [r, g, b], from `--skin-ink` (#rgb or #rrggbb). */
+function inkRgb() {
+  let h = getComputedStyle(document.documentElement).getPropertyValue('--skin-ink').trim().replace('#', '');
+  if (h.length === 3) h = [...h].map((c) => c + c).join('');
+  const n = parseInt(h, 16);
+  return /^[0-9a-f]{6}$/i.test(h) ? [n >> 16, (n >> 8) & 255, n & 255] : null;
+}
+/** The figure's box in page pixels, from its geometry: the halo filter would widen its client rect. */
+function bodyRect() {
+  const top = Math.min(20, HEAD_TOP[ctl.skin.head] ?? 12);
+  const pts = [[20, top], [236, top], [20, 256], [236, 256]].map(([x, y]) => ctl.toStage(x, y));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+const inflate = (r, d) => ({ x: r.x - d, y: r.y - d, width: r.width + 2 * d, height: r.height + 2 * d });
+const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+
+/** Samples a ring around the body (past the halo's reach, minus the page's own bubbles) and flips the halo. */
+async function probeBackdrop() {
+  const ink = inkRgb();
+  if (!ink) return;
+  const body = bodyRect(), S = ctl.bounds.S;
+  const near = inflate(body, 12 + 60 * S), far = inflate(near, 40);
+  const x = Math.max(0, far.x), y = Math.max(0, far.y);
+  const rect = { x, y, width: Math.min(innerWidth, far.x + far.width) - x, height: Math.min(innerHeight, far.y + far.height) - y };
+  const skip = [near, ...[bubble, heardEl, menu, tools].filter((el) => !el.hidden).map(rectOf)];
+  const px = await host.sampleBackdrop(rect, skip);
+  // this platform cannot read the screen cheaply: the halo just stays
+  if (px === null) { backdrop.on = true; backdrop.fixed = true; return; }
+  const n = px.length / 3;
+  if (n < 24) return;
+  const [L, A, B] = oklab(...ink);
+  let same = 0;
+  for (let i = 0; i < px.length; i += 3) {
+    const [l, a, b] = oklab(px[i], px[i + 1], px[i + 2]);
+    if (Math.hypot(l - L, a - A, b - B) < SAME_COLOR) same++;
+  }
+  const share = same / n;
+  backdrop.on = backdrop.on ? share >= HALO_OFF : share > HALO_ON;
+}
+function stepBackdrop(dt) {
+  const now = performance.now() / 1000;
+  if (host?.sampleBackdrop && !backdrop.fixed && !backdrop.busy && now >= backdrop.next && document.visibilityState === 'visible') {
+    backdrop.busy = true;
+    probeBackdrop().catch(() => {}).finally(() => { backdrop.busy = false; backdrop.next = performance.now() / 1000 + BACKDROP_EVERY; });
+  }
+  const k = backdrop.k + ((backdrop.on ? 1 : 0) - backdrop.k) * Math.min(1, dt * 6);
+  backdrop.k = k < .005 ? 0 : k;
+  if (backdrop.k) { haloFlood.setAttribute('flood-opacity', f(backdrop.k)); petG.setAttribute('filter', 'url(#halo)'); }
+  else petG.removeAttribute('filter');
+}
+
 /* ---------- loop ---------- */
 let last = performance.now();
 function frame(now) {
@@ -577,6 +649,7 @@ function frame(now) {
   stepListen();
   ctl.step(dt);
   ctl.render();
+  stepBackdrop(dt);
   stepTools();
   layout();
   requestAnimationFrame(frame);
