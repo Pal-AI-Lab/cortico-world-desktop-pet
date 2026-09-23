@@ -92,7 +92,8 @@ World 进程退出后窗口在 2 秒内自己关掉。
 
 ## 给内嵌应用
 
-`desktopPetDefinition({ controls, onCreate })` 生成定义:`controls`(`PetBotControls`)给右键菜单借出暂停、设置、退出;
+`desktopPetDefinition({ controls, onCreate })` 生成定义:`controls`(`PetBotControls`)给右键菜单借出暂停、设置、退出,
+借了哪个就只画哪个按钮(暂停要 `isPaused` 和 `setPaused`,设置要 `openSettings`,退出要 `quit` 与可选的 `quitLabel`);
 `onCreate` 拿到 World 实例,应用可以调 `world.confirm(问题, [同意, 不同意])` 弹一个两选项气泡,
 结果是 `yes` / `no` / `dismissed` / `timeout`(60 秒没人答) / `unavailable`(没有桌宠页),不会作为事件送给 bot。
 
