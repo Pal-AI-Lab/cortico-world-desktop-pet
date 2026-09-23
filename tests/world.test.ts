@@ -264,12 +264,28 @@ describe('with a pet page', () => {
     const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
     cleanup.push(() => tab.close());
     const state = await (await fetch(`${origin(world)}/api/state`)).json() as { bot: Record<string, unknown> };
-    expect(state.bot).toMatchObject({ name: 'Bot', controls: true, paused: false, quitLabel: '退出 App', avatar: expect.any(String) });
+    expect(state.bot).toMatchObject({
+      name: 'Bot', controls: true, buttons: { pause: true, settings: true, quit: true }, paused: false, quitLabel: '退出 App', avatar: expect.any(String),
+    });
     win.send({ t: 'control', action: 'pause' });
     expect((await win.next((m) => m.t === 'prefs')).bot).toMatchObject({ paused: true });
     tab.send({ t: 'control', action: 'settings' });
     tab.send({ t: 'control', action: 'quit' });
     await expect.poll(() => calls).toEqual(['pause', 'settings', 'quit']);
+  });
+
+  it('the menu header shows only the controls the app lends', async () => {
+    const calls: string[] = [];
+    const { world } = await mounted(undefined, { botName: 'Bot', controls: { openSettings: () => calls.push('settings') } });
+    const win = await FakePage.open(origin(world), 'role=pet&host=window');
+    cleanup.push(() => win.close());
+    const state = await (await fetch(`${origin(world)}/api/state`)).json() as { bot: Record<string, unknown> };
+    expect(state.bot).toMatchObject({ controls: true, buttons: { pause: false, settings: true, quit: false }, paused: null, quitLabel: '', quitPrompt: '' });
+    // controls that were not lent are ignored
+    win.send({ t: 'control', action: 'pause' });
+    win.send({ t: 'control', action: 'quit' });
+    win.send({ t: 'control', action: 'settings' });
+    await expect.poll(() => calls).toEqual(['settings']);
   });
 
   it('rejects requests whose Host is not a loopback name', async () => {

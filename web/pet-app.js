@@ -427,9 +427,11 @@ function renderMenuHead(confirmQuit = false) {
     act('<span>取消</span>', '取消', () => renderMenuHead(), 'm-act text');
     return;
   }
-  act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }));
-  act(ICONS.settings, '设置', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
-  act(ICONS.power, bot.quitLabel, () => renderMenuHead(true));
+  // only the controls the embedding app lent; a server without `buttons` lends all three
+  const has = bot.buttons ?? { pause: true, settings: true, quit: true };
+  if (has.pause) act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }));
+  if (has.settings) act(ICONS.settings, '设置', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
+  if (has.quit) act(ICONS.power, bot.quitLabel, () => renderMenuHead(true));
 }
 function openSubmenu(item, choices, current, pick) {
   if (menu.querySelector('.submenu')?.dataset.for === item.firstChild.textContent) return;

@@ -53,16 +53,17 @@ const CONFIRM_TIMEOUT_MS = 60_000;
 const HOTKEY_POLL_MS = 30;
 
 /**
- * Run controls an embedding app lends the pet's menu. Without them the menu header shows only
- * the avatar and the name.
+ * Run controls an embedding app lends the pet's menu. Each button shows only when its control is
+ * lent: pause/resume needs `isPaused` and `setPaused`, settings `openSettings`, the power button
+ * `quit`. Without any the menu header shows only the avatar and the name.
  */
 export interface PetBotControls {
-  isPaused(): boolean;
-  setPaused(paused: boolean): void;
-  openSettings(): void;
-  quit(): void;
+  isPaused?(): boolean;
+  setPaused?(paused: boolean): void;
+  openSettings?(): void;
+  quit?(): void;
   /** The power button's label, e.g. "退出 CortiCompanion". */
-  quitLabel: string;
+  quitLabel?: string;
 }
 
 /** How a confirmation ended: one of the two choices, closed, no answer in time, or no pet page to ask on. */
@@ -267,13 +268,16 @@ export class DesktopPetWorld implements World {
     const c = this.opts.controls;
     let avatar: string | null = null;
     try { if (this.opts.avatarFile) avatar = String(statSync(this.opts.avatarFile).mtimeMs); } catch { /* no avatar yet */ }
+    const pause = !!(c?.isPaused && c.setPaused);
+    const quitLabel = c?.quit ? c.quitLabel || '退出' : '';
     return {
       name: this.opts.botName ?? '',
       avatar,
       controls: !!c,
-      paused: c ? c.isPaused() : null,
-      quitLabel: c?.quitLabel ?? '',
-      quitPrompt: c ? `${c.quitLabel}?` : '',
+      buttons: { pause, settings: !!c?.openSettings, quit: !!c?.quit },
+      paused: pause && c?.isPaused ? c.isPaused() : null,
+      quitLabel,
+      quitPrompt: quitLabel ? `${quitLabel}?` : '',
     };
   }
 
@@ -377,9 +381,9 @@ export class DesktopPetWorld implements World {
   private onControl(action: string): void {
     const c = this.opts.controls;
     if (!c) return;
-    if (action === 'pause' || action === 'resume') c.setPaused(action === 'pause');
-    else if (action === 'settings') c.openSettings();
-    else if (action === 'quit') c.quit();
+    if (action === 'pause' || action === 'resume') c.setPaused?.(action === 'pause');
+    else if (action === 'settings') c.openSettings?.();
+    else if (action === 'quit') c.quit?.();
     this.syncPrefs();
   }
 
