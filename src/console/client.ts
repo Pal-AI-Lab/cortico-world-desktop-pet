@@ -28,6 +28,8 @@ interface VoiceState {
     deviceId: string;
     /** `always` while the talk key cannot be read */
     effectiveMode: MicMode;
+    hotkeyLabel: string;
+    hint: string;
     hotkeyProblem: string | null;
     open: boolean;
     devices: Array<{ id: string; label: string }>;
@@ -50,11 +52,6 @@ const CODE_KEYS: Record<string, string> = {
 };
 const keyOfCode = (code: string): string | null =>
   CODE_KEYS[code] ?? (/^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digitd$/.test(code) ? code.slice(5) : /^Fd{1,2}$/.test(code) ? code : null);
-const KEY_LABELS: Record<string, string> = {
-  LeftCtrl: '左 Ctrl', RightCtrl: '右 Ctrl', LeftAlt: '左 Alt', RightAlt: '右 Alt', LeftShift: '左 Shift', RightShift: '右 Shift',
-  RightWin: '右 Win', Backquote: '`', Mouse3: '鼠标中键', Mouse4: '鼠标侧键 4', Mouse5: '鼠标侧键 5',
-};
-const hotkeyLabel = (hotkey: string) => hotkey.split('+').map((k) => KEY_LABELS[k] ?? k).join(' + ');
 
 const MB = (n: number) => `${Math.round(n / 1048576)} MB`;
 const progress = (a: Artifact) => (a.total ? `${Math.round((a.done / a.total) * 100)}%` : MB(a.done));
@@ -225,11 +222,9 @@ const voicePanel: ConsolePanel = {
       }
       if (document.activeElement !== deviceSel) deviceSel.value = input.deviceId;
       if (document.activeElement !== modeSel) modeSel.value = input.mode;
-      if (!capturing) keyBtn.textContent = `说话键:${hotkeyLabel(input.hotkey)}`;
+      if (!capturing) keyBtn.textContent = `说话键:${input.hotkeyLabel}`;
       keyBtn.hidden = input.mode === 'always';
-      const how = input.effectiveMode === 'hold' ? `按住 ${hotkeyLabel(input.hotkey)} 说话`
-        : input.effectiveMode === 'toggle' ? `按 ${hotkeyLabel(input.hotkey)} 开关收音` : '一直收音';
-      modeRow.set(input.open ? '正在收音' : '等说话键', input.open ? 'on' : 'off', input.hotkeyProblem ? `${input.hotkeyProblem},改为一直收音` : how);
+      modeRow.set(input.open ? '正在收音' : '等说话键', input.open ? 'on' : 'off', input.hotkeyProblem ? `${input.hotkeyProblem},改为一直收音` : input.hint);
       // the loudness threshold only decides where speech starts when the key is not held down
       mark.hidden = input.effectiveMode === 'hold';
       mark.style.left = `${meterPct(next.thresholdDb)}%`;

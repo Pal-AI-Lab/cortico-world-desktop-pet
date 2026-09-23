@@ -34,6 +34,16 @@ export function parseHotkey(hotkey: string): number[] | null {
   return codes;
 }
 
+const LABELS: Record<string, string> = {
+  LeftCtrl: '左 Ctrl', RightCtrl: '右 Ctrl', LeftAlt: '左 Alt', RightAlt: '右 Alt', LeftShift: '左 Shift', RightShift: '右 Shift',
+  RightWin: '右 Win', Backquote: '`', Mouse3: '鼠标中键', Mouse4: '鼠标侧键 4', Mouse5: '鼠标侧键 5',
+};
+
+/** How the console names `hotkey` to a person. */
+export function hotkeyLabel(hotkey: string): string {
+  return hotkey.split('+').map((k) => LABELS[k] ?? k).join(' + ');
+}
+
 export interface KeyWatcher {
   stop(): void;
 }

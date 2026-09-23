@@ -29,7 +29,7 @@ import { WindowHost, resolveHostCommand } from './window-host.ts';
 import { RuntimeStore, WHISPER_MODELS, type ArtifactState } from './runtime/store.ts';
 import { WhisperServer, type WhisperServerState } from './asr/whisper-server.ts';
 import { Packer, Segmenter, rmsDb, type SegmentConfig, type Utterance } from './asr/segmenter.ts';
-import { parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
+import { hotkeyLabel, parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
 import { looksHallucinated, transcribe } from './asr/client.ts';
 import { toSimplified } from './asr/simplify.ts';
 import { estimateSeconds, parseActions, parseScript, vocabTable } from './script.ts';
@@ -533,6 +533,13 @@ export class DesktopPetWorld implements World {
     this.segmenter.configure(this.segmentConfig());
   }
 
+  /** One line telling the person how to be heard. */
+  private talkHint(): string {
+    const key = hotkeyLabel(this.cfg.asr.mic.hotkey);
+    const mode = this.micMode();
+    return mode === 'hold' ? `按住 ${key} 说话` : mode === 'toggle' ? `按一下 ${key} 开始听,再按一下停` : '一直在听,直接说话';
+  }
+
   private onTalkKey(down: boolean): void {
     if (this.micMode() === 'hold') this.setTalking(down);
     else if (down) this.setTalking(!this.talking);
@@ -856,6 +863,8 @@ export class DesktopPetWorld implements World {
       input: {
         ...this.cfg.asr.mic,
         effectiveMode: this.micMode(),
+        hotkeyLabel: hotkeyLabel(this.cfg.asr.mic.hotkey),
+        hint: this.talkHint(),
         hotkeyProblem: this.hotkeyProblem,
         open: this.gateOpen(),
         devices: this.devices,
