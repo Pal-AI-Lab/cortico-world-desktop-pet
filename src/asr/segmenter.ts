@@ -22,7 +22,7 @@
  * 静音之外还想多等多久",默认 0。流水线空闲后，`maxHoldMs` 到期的批次立即发车。
  */
 
-import type { TranscribeResult } from './client.ts';
+import { joinSpeech, type TranscribeResult } from './result.ts';
 
 /** 一句:16-bit 单声道 PCM,附上它在流里的位置 */
 export interface Utterance {
@@ -303,7 +303,7 @@ export class Packer {
   /** 不管到没到点,把攒着的交出来(停止采集、面板要求立刻投递时用) */
   take(): string | null {
     if (this.pieces.length === 0) return null;
-    const text = this.pieces.join(' ');
+    const text = joinSpeech(this.pieces);
     this.pieces = [];
     return text;
   }

@@ -2,7 +2,7 @@
   "name": "cortico-world-desktop-pet",
   "version": "0.1.1",
   "type": "module",
-  "description": "Cortico World: a desktop pet that talks in bubbles, asks with options, walks, emotes, and hears you through whisper.cpp",
+  "description": "Cortico World: a desktop pet that talks in bubbles, asks with options, walks, emotes, and hears you through FunASR (SenseVoice on sherpa-onnx)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
     "cortico-world",
     "cortico",
     "desktop-pet",
-    "whisper"
+    "funasr"
   ],
   "engines": {
     "node": ">=22"
@@ -51,6 +51,7 @@
   "dependencies": {
     "koffi": "^3.3.1",
     "opencc-js": "^1.4.1",
+    "sherpa-onnx-node": "1.13.8",
     "ws": "^8.18.0"
   },
   "devDependencies": {

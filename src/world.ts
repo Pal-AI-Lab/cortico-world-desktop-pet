@@ -3,13 +3,13 @@
  *
  * Output goes through four tools that drive the pet page (bubble, options, walking,
  * expressions and motions). Input arrives as events: speech heard through the pet window's
- * microphone (transcribed by Windows' own recognizer or whisper.cpp), typed text, answers to `pet_ask`, and touches
+ * microphone (transcribed by FunASR's SenseVoice in this process, or Windows' own recognizer), typed text, answers to `pet_ask`, and touches
  * (poke, petting, being thrown). The page reports what actually happened; receipts and
  * events state only that.
  *
  * Processes owned here: the page server (always, while mounted), the pet window (when
- * `window.enabled`), the system recognizer's helper (voice input on, engine `system`) and the
- * managed whisper.cpp server (voice input on, engine `whisper`, nothing else answering at the endpoint).
+ * `window.enabled`) and the system recognizer's helper (voice input on, engine `system`). FunASR runs
+ * in this process once its model is downloaded.
  */
 import type { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
@@ -23,16 +23,16 @@ import type { Language } from 'cortico/core/language.ts';
 import type { DeepPartial } from 'cortico/world.ts';
 import {
   DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID, MAX_HOVER_BUTTONS, PET_ACTIONS, hoverButtonList,
-  type AsrEngine, type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
+  type AsrEngine, type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode,
 } from './config.ts';
 import { PetServer, type PageMessage } from './server.ts';
 import { WindowHost, resolveHostCommand } from './window-host.ts';
-import { RuntimeStore, WHISPER_MODELS, type ArtifactState } from './runtime/store.ts';
-import { WhisperServer, type WhisperServerState } from './asr/whisper-server.ts';
+import { RuntimeStore, type ModelSpec } from './runtime/store.ts';
+import { FunAsrRecognizer, type FunAsrState, type SherpaModule } from './asr/funasr.ts';
 import { SystemRecognizer, systemRecognizerSupported, type SystemRecognizerState, type SystemSentence } from './asr/system-recognizer.ts';
 import { Packer, Segmenter, rmsDb, type SegmentConfig, type SegmentSink, type Utterance } from './asr/segmenter.ts';
 import { hotkeyLabel, parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
-import { looksHallucinated, transcribe } from './asr/client.ts';
+import { joinSpeech, looksHallucinated } from './asr/result.ts';
 import { toSimplified } from './asr/simplify.ts';
 import { estimateSeconds, parseActions, parseScript, vocabTable } from './script.ts';
 import { DESKTOP_PET_TOOL_DECLS } from './tools.ts';
@@ -81,7 +81,12 @@ export interface DesktopPetWorldOptions {
   persist: (patch: DeepPartial<DesktopPetConfigSection>) => void;
   runtimesRoot: () => string;
   modelsDir: () => string;
+  /** Downloads; tests pass a local stand-in. */
   fetchImpl?: typeof fetch;
+  /** Loads sherpa-onnx; tests pass a fake recognizer. */
+  loadSherpa?: () => SherpaModule;
+  /** The speech model to download; tests pass a small one. */
+  funasrModel?: ModelSpec;
   /** Shown in the menu header. */
   botName?: string;
   /** PNG shown as the avatar in the menu header, when it exists. */
@@ -133,10 +138,10 @@ export class DesktopPetWorld implements World {
   private readonly server: PetServer;
   private windowHost: WindowHost | null = null;
   private readonly store: RuntimeStore;
-  private whisper: WhisperServer | null = null;
+  private funasr: FunAsrRecognizer | null = null;
   private system: SystemRecognizer | null = null;
   /** The engine the running backend belongs to; a config change starts the other one. */
-  private runningEngine: 'system' | 'whisper' | null = null;
+  private runningEngine: AsrEngine | null = null;
   /** The person asked to send what was heard now, without waiting for the pause that ends a sentence. */
   private committing = false;
   private readonly segmenter: Segmenter;
@@ -172,7 +177,7 @@ export class DesktopPetWorld implements World {
     this.cfg = opts.cfg;
     this.segmenter = new Segmenter(this.segmentConfig(), FRAME_MS);
     this.segmenter.setSink(this.sink);
-    this.store = new RuntimeStore({ runtimesRoot: opts.runtimesRoot, modelsDir: opts.modelsDir, fetchImpl: opts.fetchImpl });
+    this.store = new RuntimeStore({ runtimesRoot: opts.runtimesRoot, modelsDir: opts.modelsDir, fetchImpl: opts.fetchImpl, funasrModel: opts.funasrModel });
     this.server = new PetServer({
       port: () => this.cfg.port,
       webDir: WEB_DIR,
@@ -195,13 +200,12 @@ export class DesktopPetWorld implements World {
     await this.server.start();
     this.windowHost = new WindowHost(host.log);
     if (this.cfg.window.enabled) this.openWindow();
-    this.whisper = new WhisperServer({
-      baseUrl: () => this.cfg.asr.baseUrl,
-      launch: () => this.whisperLaunch(),
+    this.funasr = new FunAsrRecognizer({
+      model: () => this.funasrModel(),
       language: () => this.cfg.asr.language,
       threads: () => this.cfg.asr.threads,
       log: host.log,
-      fetchImpl: this.opts.fetchImpl,
+      load: this.opts.loadSherpa,
     });
     this.system = new SystemRecognizer({
       language: () => this.cfg.asr.language,
@@ -231,7 +235,7 @@ export class DesktopPetWorld implements World {
     for (const s of this.voiceSockets) s.close('stopped');
     this.voiceSockets.clear();
     await this.windowHost?.stop();
-    await this.whisper?.stop();
+    await this.funasr?.stop();
     await this.system?.stop();
     await this.server.stop();
     this.host = null;
@@ -316,6 +320,8 @@ export class DesktopPetWorld implements World {
     if (this.cfg.asr.enabled && this.runningEngine && this.runningEngine !== this.engine()) void this.startVoiceBackend();
     // the system recognizer serves one language; a new one needs a new helper
     else if (this.cfg.asr.enabled && this.runningEngine === 'system' && this.system?.languageChanged) void this.startVoiceBackend();
+    // FunASR loads the model for one language and thread count
+    else if (this.cfg.asr.enabled && this.runningEngine === 'funasr' && this.funasr?.configChanged) void this.startVoiceBackend();
     void this.syncHotkey();
     const key = this.prefsSignature();
     if (key === this.prefsKey) return;
@@ -325,13 +331,13 @@ export class DesktopPetWorld implements World {
 
   private micWanted(): boolean {
     const phase = this.backendState()?.phase;
-    return this.cfg.asr.enabled && (phase === 'running' || phase === 'external');
+    return this.cfg.asr.enabled && (phase === 'running');
   }
 
   /** What the pet's microphone button shows: switched on, able to hear, and why not. */
   private voiceBrief(): Record<string, unknown> {
     const b = this.backendState();
-    const ready = b?.phase === 'running' || b?.phase === 'external';
+    const ready = b?.phase === 'running';
     return {
       enabled: this.cfg.asr.enabled,
       ready,
@@ -523,48 +529,38 @@ export class DesktopPetWorld implements World {
 
   /* ---------- voice ---------- */
 
-  private whisperLaunch(): { exe: string; model: string } | { missing: string } {
-    const exe = this.cfg.asr.serverFile || this.store.whisper.executable();
-    if (!exe) return { missing: '没有 whisper.cpp 服务程序:在语音输入面板安装,或在配置里指定' };
-    const modelState = this.store.model(this.cfg.asr.model).state();
-    const model = this.cfg.asr.modelFile || (modelState.phase === 'ready' ? modelState.path : '');
-    if (!model) return { missing: `没有识别模型 ${WHISPER_MODELS[this.cfg.asr.model].file}:在语音输入面板下载` };
-    return { exe, model };
+  private funasrModel(): { model: string; tokens: string } | { missing: string } {
+    if (this.store.funasr.state().phase !== 'ready') return { missing: `识别模型还没下载(约 ${Math.round(this.store.funasr.bytes / 1048576)} MB):在「语音输入」页下载` };
+    return { model: this.store.funasr.file('model.int8.onnx'), tokens: this.store.funasr.file('tokens.txt') };
   }
 
-  /** The engine in force: `auto` is Windows' own recognizer on Windows and whisper elsewhere. */
-  engine(): 'system' | 'whisper' {
-    const e: AsrEngine = this.cfg.asr.engine;
-    if (e === 'system' || e === 'whisper') return e;
-    return systemRecognizerSupported() ? 'system' : 'whisper';
+  /** The engine in force: Windows' own recognizer only where it exists, FunASR otherwise (and for older settings). */
+  engine(): AsrEngine {
+    return this.cfg.asr.engine === 'system' && systemRecognizerSupported() ? 'system' : 'funasr';
   }
 
-  private backendState(): WhisperServerState | SystemRecognizerState | null {
-    return (this.engine() === 'system' ? this.system?.state() : this.whisper?.state()) ?? null;
+  private backendState(): FunAsrState | SystemRecognizerState | null {
+    return (this.engine() === 'system' ? this.system?.state() : this.funasr?.state()) ?? null;
   }
 
-  /**
-   * Starts the engine in force and stops the other one. whisper.cpp starts only when asked
-   * `explicitly` (the panel's start button), when `manageServer` is on, or when something
-   * already answers at the endpoint.
-   */
-  async startVoiceBackend(explicitly = false): Promise<WhisperServerState | SystemRecognizerState | null> {
-    if (!this.whisper || !this.system) return null;
+  /** Starts the engine in force and stops the other one. */
+  async startVoiceBackend(): Promise<FunAsrState | SystemRecognizerState | null> {
+    if (!this.funasr || !this.system) return null;
     const engine = this.engine();
     if (this.runningEngine !== engine) {
       if (this.runningEngine === 'system') await this.system.stop();
-      else if (this.runningEngine === 'whisper') await this.whisper.stop();
+      else if (this.runningEngine === 'funasr') await this.funasr.stop();
       this.runningEngine = engine;
     }
     if (engine === 'system') await this.system.start();
-    else if (explicitly || this.cfg.asr.manageServer || await this.whisper.reachable()) await this.whisper.start();
+    else await this.funasr.start();
     this.syncPrefs();
     return this.backendState();
   }
 
   private async stopVoiceBackend(): Promise<void> {
     if (this.engine() === 'system') await this.system?.stop();
-    else await this.whisper?.stop();
+    else await this.funasr?.stop();
     this.syncPrefs();
   }
 
@@ -689,10 +685,9 @@ export class DesktopPetWorld implements World {
           ? await u.result
           : this.engine() === 'system' && this.system
             ? await this.system.transcribe(u.pcm)
-            : await transcribe(u.pcm, SAMPLE_RATE, {
-              baseUrl: this.cfg.asr.baseUrl, model: WHISPER_MODELS[this.cfg.asr.model].file, language: this.cfg.asr.language,
-              timeoutMs: this.cfg.asr.timeoutMs, fetchImpl: this.opts.fetchImpl,
-            });
+            : this.funasr
+              ? await this.funasr.transcribe(u.pcm)
+              : { text: '', ms: 0, error: '识别没有启动' };
         let text = res.text;
         if (this.cfg.asr.simplified) text = toSimplified(text);
         if (res.error || looksHallucinated(text)) {
@@ -717,13 +712,13 @@ export class DesktopPetWorld implements World {
 
   private partial = '';
   private pendingText(add: string): string {
-    this.partial = this.partial ? `${this.partial} ${add}` : add;
+    this.partial = joinSpeech([this.partial, add]);
     return this.partial;
   }
 
-  /* ---------- hearing as it is spoken (system engine) ---------- */
+  /* ---------- hearing as it is spoken ---------- */
 
-  /** The sentence the system recognizer is hearing now, and what it has made of it so far. */
+  /** The sentence the recognizer is hearing now, and what it has made of it so far. */
   private sentence: SystemSentence | null = null;
   private interim = '';
 
@@ -732,8 +727,9 @@ export class DesktopPetWorld implements World {
     begin: (frames) => {
       this.sentence = null;
       this.interim = '';
-      if (this.engine() !== 'system' || !this.system) return;
-      const s: SystemSentence | null = this.system.sentence((text) => {
+      const recognizer = this.engine() === 'system' ? this.system : this.funasr;
+      if (!recognizer) return;
+      const s: SystemSentence | null = recognizer.sentence((text) => {
         if (this.sentence !== s) return;
         this.interim = this.cfg.asr.simplified ? toSimplified(text) : text;
         this.showHeard();
@@ -915,7 +911,7 @@ export class DesktopPetWorld implements World {
       },
       {
         label: '语音识别',
-        state: !this.cfg.asr.enabled ? 'offline' : v?.phase === 'running' || v?.phase === 'external' ? 'online' : v?.phase === 'starting' ? 'loading' : v?.phase === 'error' ? 'error' : 'offline',
+        state: !this.cfg.asr.enabled ? 'offline' : v?.phase === 'running' ? 'online' : v?.phase === 'starting' ? 'loading' : v?.phase === 'error' ? 'error' : 'offline',
         hint: v?.detail ?? v?.phase ?? '未启动',
       },
     ];
@@ -958,17 +954,12 @@ export class DesktopPetWorld implements World {
     if (panel === 'voice') {
       switch (method) {
         case 'state': return this.voiceState();
-        case 'install': {
-          const model = (typeof args[0] === 'string' && args[0] in WHISPER_MODELS ? args[0] : this.cfg.asr.model) as WhisperModel;
-          if (model !== this.cfg.asr.model) this.opts.persist({ asr: { model } });
-          void this.installVoice(model);
-          return this.voiceState();
-        }
-        case 'start': await this.startVoiceBackend(true); return this.voiceState();
+        case 'install': void this.installVoice(); return this.voiceState();
+        case 'start': await this.startVoiceBackend(); return this.voiceState();
         case 'stop': await this.stopVoiceBackend(); return this.voiceState();
         case 'setEngine': {
           const engine = args[0];
-          if (engine === 'auto' || engine === 'system' || engine === 'whisper') this.opts.persist({ asr: { engine } });
+          if (engine === 'funasr' || engine === 'system') this.opts.persist({ asr: { engine } });
           if (this.cfg.asr.enabled) await this.startVoiceBackend();
           return this.voiceState();
         }
@@ -983,18 +974,14 @@ export class DesktopPetWorld implements World {
     throw new Error(`未知方法 ${panel}.${method}`);
   }
 
-  /** Downloads what voice input still lacks, then starts the server. */
-  async installVoice(model: WhisperModel = this.cfg.asr.model): Promise<void> {
-    const jobs: Promise<void>[] = [];
-    if (!this.cfg.asr.serverFile && this.store.whisper.state().phase !== 'ready') jobs.push(this.store.whisper.install());
-    if (!this.cfg.asr.modelFile && this.store.model(model).state().phase !== 'ready') jobs.push(this.store.model(model).install());
-    await Promise.all(jobs);
-    // downloading whisper is choosing it
-    if (this.engine() !== 'whisper') this.opts.persist({ asr: { engine: 'whisper' } });
-    if (this.cfg.asr.enabled && this.cfg.asr.manageServer) {
-      await this.whisper?.stop();
-      await this.startVoiceBackend();
-    }
+  /** Downloads the FunASR model, chooses FunASR, and starts it when voice input is on. */
+  async installVoice(): Promise<void> {
+    if (this.store.funasr.state().phase !== 'ready') await this.store.funasr.install();
+    if (this.store.funasr.state().phase !== 'ready') { this.syncPrefs(); return; }
+    // downloading the model is choosing it
+    if (this.cfg.asr.engine !== 'funasr') this.opts.persist({ asr: { engine: 'funasr' } });
+    if (this.cfg.asr.enabled) await this.startVoiceBackend();
+    else this.syncPrefs();
   }
 
   petState(): Record<string, unknown> {
@@ -1010,18 +997,13 @@ export class DesktopPetWorld implements World {
   }
 
   voiceState(): Record<string, unknown> {
-    const models = Object.fromEntries(
-      (Object.keys(WHISPER_MODELS) as WhisperModel[]).map((m) => [m, { ...this.store.model(m).state(), bytes: WHISPER_MODELS[m].bytes }]),
-    ) as Record<string, ArtifactState & { bytes: number }>;
     return {
       enabled: this.cfg.asr.enabled,
       engine: this.engine(),
       engineSetting: this.cfg.asr.engine,
       systemSupported: systemRecognizerSupported(),
-      model: this.cfg.asr.model,
       server: this.backendState(),
-      runtime: { ...this.store.whisper.state(), supported: this.store.whisper.supported || !!this.cfg.asr.serverFile },
-      models,
+      model: { ...this.store.funasr.state(), bytes: this.store.funasr.bytes },
       mic: this.micState,
       input: {
         ...this.cfg.asr.mic,

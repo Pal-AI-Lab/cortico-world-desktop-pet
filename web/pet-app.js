@@ -347,7 +347,8 @@ function showHeard(text, live, hint, interim = '') {
   heardEl.hidden = false; trail.hidden = false;
   heardEl.innerHTML = `<p class="b-text"><span class="fin"></span><span class="interim"></span>${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</p><span class="b-hint"></span>`;
   heardEl.querySelector('.fin').textContent = text;
-  heardEl.querySelector('.interim').textContent = text && interim ? ' ' + interim : interim;
+  // a space only before Latin text that follows Latin text or ASCII punctuation; Chinese sentences run on
+  heardEl.querySelector('.interim').textContent = text && interim && /[A-Za-z0-9.,!?;:]$/.test(text) && /^[A-Za-z0-9]/.test(interim) ? ' ' + interim : interim;
   heardEl.querySelector('.b-hint').textContent = hint || (text || interim ? '还在听…' : '正在听…');
 }
 function stepListen() {

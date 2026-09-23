@@ -1,9 +1,12 @@
 /**
- * Managed downloads: the whisper.cpp server, its ggml models, and the Electron runtime that
- * hosts the pet window. Every artifact is pinned to a version. Files land at
- * `<CORTICO_HOME>/runtimes/<id>/<version>/` and `<CORTICO_HOME>/models/desktop-pet/`, are
- * written to `.partial` first and renamed into place when complete; models are checked
- * against the SHA-256 their repository publishes.
+ * Managed downloads: the FunASR speech model (SenseVoiceSmall int8 in sherpa-onnx's format) and
+ * the Electron runtime that hosts the pet window when it runs outside an app. Every artifact is
+ * pinned. Files land at `<CORTICO_HOME>/runtimes/<id>/<version>/` and
+ * `<CORTICO_HOME>/models/desktop-pet/<model id>/`, are written to `.partial` first and renamed
+ * into place when complete; model files are checked against their published SHA-256.
+ *
+ * The model is fetched from ModelScope first, which answers from mainland China, and from Hugging
+ * Face when ModelScope does not; the files are the same (their SHA-256 match).
  *
  * Archives are unpacked with the system `tar` (bsdtar on Windows and macOS reads zip too);
  * Linux zips go through `unzip`.
@@ -13,7 +16,6 @@ import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { downloadFile, type DownloadOptions } from './download.ts';
-import type { WhisperModel } from '../config.ts';
 
 export type Phase = 'absent' | 'working' | 'ready' | 'error';
 
@@ -28,26 +30,26 @@ export interface ArtifactState {
 
 const platformKey = (): string => `${process.platform}-${process.arch}`;
 
-export const WHISPER_RUNTIME = {
-  id: 'whisper.cpp',
-  version: 'b5130',
-  assets: {
-    'win32-x64': { file: 'whisper-bin-x64.zip', bytes: 8_573_270 },
-    'win32-arm64': { file: 'whisper-bin-win-cpu-arm64.zip', bytes: 4_361_895 },
-    'linux-x64': { file: 'whisper-bin-ubuntu-x64.tar.gz', bytes: 9_793_438 },
-    'linux-arm64': { file: 'whisper-bin-ubuntu-arm64.tar.gz', bytes: 4_605_905 },
-  } as Record<string, { file: string; bytes: number }>,
-  url: (file: string) => `https://github.com/ggml-org/whisper.cpp/releases/download/b5130/${file}`,
-  executable: process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server',
-} as const;
+/** A model: its files with their sizes and SHA-256, and where to fetch them from, in order. */
+export interface ModelSpec {
+  id: string;
+  files: ReadonlyArray<{ name: string; bytes: number; sha256: string }>;
+  sources: ReadonlyArray<(file: string) => string>;
+}
 
-const WHISPER_MODEL_REVISION = '5359861c739e955e79d9a303bcbc70fb988958b1';
-export const WHISPER_MODELS: Record<WhisperModel, { file: string; bytes: number; sha256: string }> = {
-  'base-q5_1': { file: 'ggml-base-q5_1.bin', bytes: 59_707_625, sha256: '422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898' },
-  'small-q5_1': { file: 'ggml-small-q5_1.bin', bytes: 190_085_487, sha256: 'ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb' },
-  'large-v3-turbo-q5_0': { file: 'ggml-large-v3-turbo-q5_0.bin', bytes: 574_041_195, sha256: '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2' },
+/** FunASR's SenseVoiceSmall, int8, as sherpa-onnx loads it (Apache-2.0 export by k2-fsa). */
+export const FUNASR_MODEL: ModelSpec = {
+  id: 'sensevoice-small-int8-2024-07-17',
+  files: [
+    { name: 'model.int8.onnx', bytes: 239_233_841, sha256: 'c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51' },
+    { name: 'tokens.txt', bytes: 315_894, sha256: 'f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc' },
+  ],
+  /** Tried in order for each file. */
+  sources: [
+    (file: string) => `https://modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/resolve/master/${file}`,
+    (file: string) => `https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/${file}`,
+  ],
 };
-const modelUrl = (file: string) => `https://huggingface.co/ggerganov/whisper.cpp/resolve/${WHISPER_MODEL_REVISION}/${file}?download=true`;
 
 export const ELECTRON_RUNTIME = {
   id: 'electron',
@@ -112,7 +114,7 @@ class RuntimeSlot {
   private job: Job;
   constructor(
     private readonly root: () => string,
-    private readonly spec: typeof WHISPER_RUNTIME | typeof ELECTRON_RUNTIME,
+    private readonly spec: typeof ELECTRON_RUNTIME,
     private readonly fetchImpl?: typeof fetch,
   ) {
     this.job = { state: { phase: 'absent', path: '', done: 0, total: null, detail: null }, promise: null };
@@ -173,39 +175,66 @@ class RuntimeSlot {
   }
 }
 
-/** Tracks one model file: present when the file exists at its full size. */
+/** The FunASR model: present when every file is there at its full size. */
 class ModelSlot {
   private job: Job;
-  constructor(private readonly dir: () => string, private readonly model: WhisperModel, private readonly fetchImpl?: typeof fetch) {
+  readonly bytes: number;
+  constructor(private readonly root: () => string, private readonly spec: ModelSpec, private readonly fetchImpl?: typeof fetch) {
+    this.bytes = spec.files.reduce((n, f) => n + f.bytes, 0);
     this.job = { state: { phase: 'absent', path: '', done: 0, total: null, detail: null }, promise: null };
   }
 
-  get path(): string {
-    return join(this.dir(), WHISPER_MODELS[this.model].file);
+  get dir(): string {
+    return join(this.root(), this.spec.id);
+  }
+
+  file(name: string): string {
+    return join(this.dir, name);
+  }
+
+  private has(f: { name: string; bytes: number }): boolean {
+    const path = this.file(f.name);
+    return existsSync(path) && statSync(path).size === f.bytes;
   }
 
   state(): ArtifactState {
     if (this.job.promise) return { ...this.job.state };
-    const spec = WHISPER_MODELS[this.model];
-    if (existsSync(this.path) && statSync(this.path).size === spec.bytes) return { phase: 'ready', path: this.path, done: spec.bytes, total: spec.bytes, detail: null };
-    return { ...this.job.state, phase: this.job.state.phase === 'error' ? 'error' : 'absent', path: this.path };
+    if (this.spec.files.every((f) => this.has(f))) return { phase: 'ready', path: this.dir, done: this.bytes, total: this.bytes, detail: null };
+    return { ...this.job.state, phase: this.job.state.phase === 'error' ? 'error' : 'absent', path: this.dir };
   }
 
   install(): Promise<void> {
     if (this.job.promise) return this.job.promise;
-    const spec = WHISPER_MODELS[this.model];
-    const partial = `${this.path}.partial`;
-    this.job.state = { phase: 'working', path: this.path, done: 0, total: spec.bytes, detail: `下载 ${spec.file}` };
+    this.job.state = { phase: 'working', path: this.dir, done: 0, total: this.bytes, detail: '下载 FunASR 识别模型' };
     const work = (async () => {
-      await downloadFile(modelUrl(spec.file), partial, { fetchImpl: this.fetchImpl, onProgress: (done, total) => { this.job.state.done = done; this.job.state.total = total ?? spec.bytes; } });
-      this.job.state.detail = '校验';
-      const sum = await sha256File(partial);
-      if (sum !== spec.sha256) throw new Error(`${spec.file} 校验不符:${sum}`);
-      renameSync(partial, this.path);
-      this.job.state = { phase: 'ready', path: this.path, done: spec.bytes, total: spec.bytes, detail: null };
+      mkdirSync(this.dir, { recursive: true });
+      let before = 0;
+      for (const f of this.spec.files) {
+        if (this.has(f)) { before += f.bytes; this.job.state.done = before; continue; }
+        const partial = `${this.file(f.name)}.partial`;
+        const errors: string[] = [];
+        for (const source of this.spec.sources) {
+          const url = source(f.name);
+          try {
+            this.job.state.detail = `下载 ${f.name}(${new URL(url).host})`;
+            await downloadFile(url, partial, { fetchImpl: this.fetchImpl, onProgress: (done) => { this.job.state.done = before + done; } });
+            this.job.state.detail = `校验 ${f.name}`;
+            const sum = await sha256File(partial);
+            if (sum !== f.sha256) throw new Error(`校验不符:${sum.slice(0, 12)}…`);
+            renameSync(partial, this.file(f.name));
+            break;
+          } catch (err) {
+            rmSync(partial, { force: true });
+            errors.push(`${new URL(url).host}: ${(err as Error).message}`);
+          }
+        }
+        if (!this.has(f)) throw new Error(`${f.name} 下载失败(${errors.join(';')})`);
+        before += f.bytes;
+        this.job.state.done = before;
+      }
+      this.job.state = { phase: 'ready', path: this.dir, done: this.bytes, total: this.bytes, detail: null };
     })().catch((err: Error) => {
-      rmSync(partial, { force: true });
-      this.job.state = { phase: 'error', path: this.path, done: 0, total: null, detail: err.message };
+      this.job.state = { phase: 'error', path: this.dir, done: 0, total: null, detail: err.message };
     }).finally(() => { this.job.promise = null; });
     this.job.promise = work;
     return work;
@@ -216,24 +245,16 @@ export interface RuntimeStoreOptions {
   runtimesRoot: () => string;
   modelsDir: () => string;
   fetchImpl?: typeof fetch;
+  /** The speech model; tests pass a small one. */
+  funasrModel?: ModelSpec;
 }
 
 export class RuntimeStore {
-  readonly whisper: RuntimeSlot;
   readonly electron: RuntimeSlot;
-  private readonly models = new Map<WhisperModel, ModelSlot>();
+  readonly funasr: ModelSlot;
 
-  constructor(private readonly opts: RuntimeStoreOptions) {
-    this.whisper = new RuntimeSlot(opts.runtimesRoot, WHISPER_RUNTIME, opts.fetchImpl);
+  constructor(opts: RuntimeStoreOptions) {
     this.electron = new RuntimeSlot(opts.runtimesRoot, ELECTRON_RUNTIME, opts.fetchImpl);
-  }
-
-  model(id: WhisperModel): ModelSlot {
-    let slot = this.models.get(id);
-    if (!slot) {
-      slot = new ModelSlot(this.opts.modelsDir, id, this.opts.fetchImpl);
-      this.models.set(id, slot);
-    }
-    return slot;
+    this.funasr = new ModelSlot(opts.modelsDir, opts.funasrModel ?? FUNASR_MODEL, opts.fetchImpl);
   }
 }

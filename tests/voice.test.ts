@@ -1,39 +1,63 @@
 /**
  * Voice input end to end inside the World: PCM frames over the pet socket → segmenter →
- * transcription endpoint (a local stand-in that speaks the OpenAI-compatible route) →
+ * FunASR (a stand-in for sherpa-onnx's recognizer that answers with a set line) →
  * `desktop-pet.speech` event, with the listen phases the page shows along the way.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { createServer, type Server } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DESKTOP_PET_DEFAULTS } from '../src/config.ts';
 import { DesktopPetWorld } from '../src/world.ts';
 import type { MicMode } from '../src/config.ts';
+import type { SherpaModule } from '../src/asr/funasr.ts';
+import type { ModelSpec } from '../src/runtime/store.ts';
 import { parseHotkey } from '../src/asr/hotkey.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { FakePage } from './helpers/page.ts';
 import { fakeSapi } from './helpers/fake-sapi.ts';
 
-interface Endpoint { url: string; bodies: string[]; reply: { text: string }; server: Server }
+/** A recognizer that answers `reply(samples)`; `decodes` lists how many samples each decode got. */
+interface FakeFunAsr { sherpa: SherpaModule; decodes: number[]; configs: Array<Record<string, unknown>>; reply: (samples: number) => string }
 
-async function endpoint(text: string): Promise<Endpoint> {
-  const ep = { bodies: [] as string[], reply: { text } } as Endpoint;
-  ep.server = createServer(async (req, res) => {
-    if (req.method === 'POST' && req.url === '/v1/audio/transcriptions') {
-      let body = '';
-      for await (const c of req) body += (c as Buffer).toString('latin1');
-      ep.bodies.push(body);
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ep.reply));
-      return;
-    }
-    res.writeHead(404).end();
-  });
-  await new Promise<void>((r) => ep.server.listen(0, '127.0.0.1', () => r()));
-  const addr = ep.server.address() as { port: number };
-  ep.url = `http://127.0.0.1:${addr.port}/v1`;
-  return ep;
+function fakeFunAsr(text: string | ((samples: number) => string)): FakeFunAsr {
+  const fake = { decodes: [] as number[], configs: [] as Array<Record<string, unknown>>, reply: typeof text === 'string' ? () => text : text } as FakeFunAsr;
+  fake.sherpa = {
+    OfflineRecognizer: {
+      createAsync: async (config) => {
+        fake.configs.push(config);
+        return {
+          createStream: () => {
+            const stream = { samples: 0, acceptWaveform: (w: { samples: Float32Array }) => { stream.samples += w.samples.length; } };
+            return stream;
+          },
+          decodeAsync: async (stream) => {
+            const n = (stream as { samples: number }).samples;
+            fake.decodes.push(n);
+            return { text: fake.reply(n) };
+          },
+        };
+      },
+    },
+  };
+  return fake;
+}
+
+const MODEL = Buffer.from('model');
+const TOKENS = Buffer.from('tokens');
+const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+/** A small stand-in for the FunASR model, fetched from `url` when not placed beforehand. */
+const modelSpec = (url = 'http://127.0.0.1:9'): ModelSpec => ({
+  id: 'test-model',
+  files: [{ name: 'model.int8.onnx', bytes: MODEL.length, sha256: sha(MODEL) }, { name: 'tokens.txt', bytes: TOKENS.length, sha256: sha(TOKENS) }],
+  sources: [(f) => `${url}/${f}`],
+});
+function placeModel(modelsDir: string): void {
+  mkdirSync(join(modelsDir, 'test-model'), { recursive: true });
+  writeFileSync(join(modelsDir, 'test-model', 'model.int8.onnx'), MODEL);
+  writeFileSync(join(modelsDir, 'test-model', 'tokens.txt'), TOKENS);
 }
 
 const tone = (ms: number, amp: number) => {
@@ -64,39 +88,39 @@ function scriptedKey(problem?: string) {
   return { key, watch };
 }
 
-async function setup(text: string, mode: MicMode = 'always', watch?: ReturnType<typeof scriptedKey>['watch']) {
-  const ep = await endpoint(text);
-  cleanup.push(() => new Promise((r) => ep.server.close(() => r())));
+async function setup(text: string | ((samples: number) => string), mode: MicMode = 'always', watch?: ReturnType<typeof scriptedKey>['watch']) {
+  const asr = fakeFunAsr(text);
   const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
   Object.assign(cfg, { enabled: true, port: 0 });
   cfg.window.enabled = false;
-  cfg.asr.engine = 'whisper';
-  cfg.asr.baseUrl = ep.url;
   cfg.asr.mic.mode = mode;
   const dir = mkdtempSync(join(tmpdir(), 'pet-voice-'));
-  const world = new DesktopPetWorld({ cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm'), watchHotkey: watch });
+  placeModel(join(dir, 'm'));
+  const world = new DesktopPetWorld({
+    cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm'),
+    watchHotkey: watch, loadSherpa: () => asr.sherpa, funasrModel: modelSpec(),
+  });
   const host = new FakeHost();
   await world.start(host);
   cleanup.push(() => world.stop());
-  // an endpoint that already answers is used as it is
-  await expect.poll(() => (world.voiceState().server as { phase: string }).phase).toBe('external');
+  await expect.poll(() => (world.voiceState().server as { phase: string }).phase).toBe('running');
   const page = await FakePage.open(world.petUrl.replace(/\/pet$/, ''));
   cleanup.push(() => page.close());
-  return { ep, world, host, page };
+  return { asr, world, host, page };
 }
 
 describe('voice input', () => {
   it('turns a spoken utterance into one speech event that wakes', async () => {
-    const { ep, host, page } = await setup('今天天气怎么样');
+    const { asr, host, page } = await setup('今天天气怎么样');
     for (const fr of [...tone(900, .3), ...tone(900, 0)]) page.audio(fr);
     await page.next((m) => m.t === 'listen' && m.phase === 'start');
     await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
     expect(host.events[0]).toMatchObject({ type: 'desktop-pet.speech', senderKey: 'desktop-pet.voice', text: '[语音] 主人:今天天气怎么样' });
     expect(host.pushOpts[0]).toEqual({ trigger: 'flush' });
     expect((await page.next((m) => m.t === 'listen' && m.phase === 'heard')).text).toBe('今天天气怎么样');
-    expect(ep.bodies).toHaveLength(1);
-    expect(ep.bodies[0]).toContain('RIFF');
-    expect(ep.bodies[0]).toContain('name="language"');
+    // the last decode is the whole utterance: at least the 900 ms spoken
+    expect(asr.decodes.at(-1)).toBeGreaterThanOrEqual(900 * 16);
+    expect(asr.configs[0]).toMatchObject({ modelConfig: { senseVoice: { language: 'zh' }, numThreads: 2 } });
   });
 
   it('drops a known hallucination and tells the page nothing was heard', async () => {
@@ -108,7 +132,7 @@ describe('voice input', () => {
 
   it('hold: only audio while the talk key is down counts, and releasing the key ends the utterance', async () => {
     const { key, watch } = scriptedKey();
-    const { ep, host, page, world } = await setup('帮我看看这个', 'hold', watch);
+    const { host, page, world } = await setup('帮我看看这个', 'hold', watch);
     expect(key.codes).toEqual(parseHotkey(DESKTOP_PET_DEFAULTS.asr.mic.hotkey));
     for (const fr of tone(600, .3)) page.audio(fr);
     await new Promise((r) => setTimeout(r, 200));
@@ -118,11 +142,10 @@ describe('voice input', () => {
     // quiet speech still counts while the key is held, pauses included
     for (const fr of [...tone(500, .01), ...tone(800, 0), ...tone(300, .01)]) page.audio(fr);
     await new Promise((r) => setTimeout(r, 200));
-    expect(ep.bodies).toHaveLength(0);
+    expect(host.events).toHaveLength(0);
     key.press(false);
     await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
     expect(host.events[0].text).toBe('[语音] 主人:帮我看看这个');
-    expect(ep.bodies).toHaveLength(1);
   });
 
   it('a talk key that cannot be read falls back to listening all the time', async () => {
@@ -134,12 +157,12 @@ describe('voice input', () => {
   });
 
   it('the microphone button held down sends the sentence without waiting for its closing pause', async () => {
-    const { ep, host, page } = await setup('帮我开灯');
+    const { host, page } = await setup('帮我开灯');
     // speech with no pause after it: the segmenter is still inside the sentence
     for (const fr of tone(600, .3)) page.audio(fr);
     await page.next((m) => m.t === 'listen' && m.phase === 'start');
     await new Promise((r) => setTimeout(r, 300));
-    expect(ep.bodies).toHaveLength(0);
+    expect(host.events).toHaveLength(0);
     page.send({ t: 'commit' });
     await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
     expect(host.events[0].text).toBe('[语音] 主人:帮我开灯');
@@ -159,12 +182,12 @@ describe('voice input', () => {
 
   it('the button held down with nothing heard closes the listening bubble and sends nothing', async () => {
     const { key, watch } = scriptedKey();
-    const { ep, host, page } = await setup('x', 'toggle', watch);
+    const { asr, host, page } = await setup('x', 'toggle', watch);
     key.press(true); key.press(false);
     await page.next((m) => m.t === 'listen' && m.phase === 'start');
     page.send({ t: 'commit' });
     await page.next((m) => m.t === 'listen' && m.phase === 'none');
-    expect(ep.bodies).toHaveLength(0);
+    expect(asr.decodes).toHaveLength(0);
     expect(host.events).toHaveLength(0);
   });
 
@@ -197,11 +220,52 @@ describe('voice input', () => {
     expect(spawned[0].lines.filter((l) => l.startsWith('B '))).toHaveLength(1);
   });
 
+  it('funasr: the bubble shows what is heard while the sentence is spoken', async () => {
+    // one character per 100 ms of audio decoded so far
+    const { host, page } = await setup((n) => '听'.repeat(Math.floor(n / 1600)));
+    for (const fr of tone(1400, .3)) page.audio(fr);
+    const live = await page.next((m) => m.t === 'listen' && m.phase === 'partial' && typeof m.interim === 'string' && m.interim.length >= 3);
+    expect(live.text).toBe('');
+    expect(host.events).toHaveLength(0);
+    for (const fr of tone(900, 0)) page.audio(fr);
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+    expect(host.events[0].text.length).toBeGreaterThan('[语音] 主人:'.length + 13);
+  });
+
+  it('funasr without its model says so, and the download starts it', async () => {
+    const MODEL_FILES: Record<string, Buffer> = { 'model.int8.onnx': Buffer.from('model'), 'tokens.txt': Buffer.from('tokens') };
+    const server = createServer((req, res) => {
+      const body = MODEL_FILES[(req.url ?? '').slice(1)];
+      if (!body) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { 'content-length': String(body.length) }).end(body);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    cleanup.push(() => new Promise((r) => server.close(() => r())));
+    const asr = fakeFunAsr('你好');
+    const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
+    Object.assign(cfg, { enabled: true, port: 0 });
+    cfg.window.enabled = false;
+    const dir = mkdtempSync(join(tmpdir(), 'pet-voice-'));
+    const world = new DesktopPetWorld({
+      cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm'),
+      loadSherpa: () => asr.sherpa, funasrModel: modelSpec(`http://127.0.0.1:${(server.address() as { port: number }).port}`),
+    });
+    await world.start(new FakeHost());
+    cleanup.push(() => world.stop());
+    await expect.poll(() => (world.voiceState().server as { detail: string | null }).detail).toContain('识别模型还没下载');
+    expect((world.voiceState().server as { phase: string }).phase).toBe('stopped');
+    expect((world.voiceState().model as { phase: string }).phase).toBe('absent');
+    await world.installVoice();
+    expect((world.voiceState().model as { phase: string }).phase).toBe('ready');
+    expect((world.voiceState().server as { phase: string }).phase).toBe('running');
+    expect(asr.configs).toHaveLength(1);
+  });
+
   it('ignores quiet input', async () => {
-    const { ep, page, world } = await setup('x');
+    const { asr, page, world } = await setup('x');
     for (const fr of tone(1500, .002)) page.audio(fr);
     await new Promise((r) => setTimeout(r, 400));
-    expect(ep.bodies).toHaveLength(0);
+    expect(asr.decodes).toHaveLength(0);
     expect((world.voiceState().counts as { utterances: number }).utterances).toBe(0);
   });
 });

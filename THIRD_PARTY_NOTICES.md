@@ -1,20 +1,21 @@
 # 第三方声明
 
-这个包不带识别程序、模型和 Electron。下面是它在运行时会去取的东西,以及各自的许可。
+这个包依赖 sherpa-onnx 的 Node 插件,不带模型和 Electron。下面是随包安装的原生组件、运行时会去取的东西,以及各自的许可。
 
-## 识别程序
+## 识别运行库
 
-whisper.cpp 的 `whisper-server`,钉在发布 `b5130`,由「语音输入」面板从
-[ggml-org/whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases/tag/b5130) 取到
-`<运行时根>/whisper.cpp/b5130/`。MIT。
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 的 Node 插件 `sherpa-onnx-node` 1.13.8 与各平台的
+预编译包(`sherpa-onnx-win-x64`、`sherpa-onnx-darwin-arm64`、`sherpa-onnx-darwin-x64` 等),随 npm 依赖安装。
+Apache-2.0;其中的 onnxruntime 为 MIT。
 
 ## 模型
 
-放在 `<模型根>/desktop-pet/`,按固定 revision 从 HuggingFace 下载并校验 SHA-256。
+FunASR 的 SenseVoiceSmall(FunAudioLLM,通义实验室)经 k2-fsa 转成 sherpa-onnx 用的 int8 ONNX,
+放在 `<模型根>/desktop-pet/sensevoice-small-int8-2024-07-17/`,按固定的 SHA-256 校验。
 
-| 文件 | 来源 | 许可 |
+| 文件 | 来源(按顺序尝试) | 许可 |
 |---|---|---|
-| `ggml-base-q5_1.bin`、`ggml-small-q5_1.bin`、`ggml-large-v3-turbo-q5_0.bin` | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) @ `5359861` | MIT(OpenAI Whisper 权重的 ggml 转换) |
+| `model.int8.onnx`、`tokens.txt` | [ModelScope pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue](https://modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue),再 [Hugging Face csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) | [FunASR 模型开源协议](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) |
 
 ## 桌宠窗口
 

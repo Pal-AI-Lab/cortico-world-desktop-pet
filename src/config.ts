@@ -36,9 +36,8 @@ export type PetTheme = 'dark' | 'light';
 export type TouchTrigger = 'debounce' | 'piggyback';
 /** hold: listen while the talk key is held; toggle: each press starts or stops listening; always: listen all the time. */
 export type MicMode = 'hold' | 'toggle' | 'always';
-export type WhisperModel = 'base-q5_1' | 'small-q5_1' | 'large-v3-turbo-q5_0';
-/** system: the recognizer Windows ships (nothing to download); whisper: whisper.cpp or any service at `baseUrl`; auto: system on Windows, whisper elsewhere. */
-export type AsrEngine = 'auto' | 'system' | 'whisper';
+/** funasr: FunASR's SenseVoiceSmall in this process (one model download, every platform); system: the recognizer Windows ships (nothing to download, less accurate). */
+export type AsrEngine = 'funasr' | 'system';
 
 export interface DesktopPetConfigSection extends WorldSection {
   /** Local server for the pet page, the dressing page and the pet window's socket. */
@@ -66,18 +65,10 @@ export interface DesktopPetConfigSection extends WorldSection {
   };
   asr: {
     enabled: boolean;
+    /** Earlier versions wrote `auto` or `whisper` here; both now mean funasr. */
     engine: AsrEngine;
-    /** Transcription endpoint (OpenAI-compatible `/audio/transcriptions`); the managed whisper.cpp server listens here. */
-    baseUrl: string;
-    /** Start the managed whisper.cpp server when nothing answers at `baseUrl`. */
-    manageServer: boolean;
-    model: WhisperModel;
-    /** whisper-server executable; empty uses the managed runtime. */
-    serverFile: string;
-    /** ggml model file; empty uses the managed download of `model`. */
-    modelFile: string;
     language: string;
-    /** 0 = whisper.cpp's default. */
+    /** CPU threads for one FunASR decode; 0 = two. */
     threads: number;
     simplified: boolean;
     timeoutMs: number;
@@ -108,12 +99,7 @@ export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
   touch: { enabled: true, trigger: 'debounce' },
   asr: {
     enabled: true,
-    engine: 'auto',
-    baseUrl: 'http://127.0.0.1:8794/v1',
-    manageServer: true,
-    model: 'small-q5_1',
-    serverFile: '',
-    modelFile: '',
+    engine: 'funasr',
     language: 'zh',
     threads: 0,
     simplified: true,
@@ -155,14 +141,9 @@ export const DESKTOP_PET_ASR_CONFIG_GROUP: ConfigGroup = {
     title: '语音输入',
     properties: {
       [`${K}.asr.enabled`]: { type: 'boolean', title: '语音输入总开关', 'x-hot': true },
-      [`${K}.asr.engine`]: { type: 'string', title: '识别引擎', enum: ['auto', 'system', 'whisper'], description: 'system 用 Windows 自带的语音识别,不用下载;whisper 用 whisper.cpp(要下载程序和模型)或识别端点上的服务,更准;auto 在 Windows 上用 system,其他系统用 whisper。', 'x-hot': true },
-      [`${K}.asr.model`]: { type: 'string', title: 'whisper 识别模型', enum: ['base-q5_1', 'small-q5_1', 'large-v3-turbo-q5_0'], description: 'base 57 MB 快;small 181 MB 中文更准;turbo 547 MB 最准也最慢。换了要重启识别服务。', 'x-hot': false },
-      [`${K}.asr.language`]: { type: 'string', title: '语言', description: 'ISO 639-1,auto 让模型自己判断。', 'x-hot': true },
-      [`${K}.asr.baseUrl`]: { type: 'string', title: '识别端点', description: 'OpenAI 兼容的 /audio/transcriptions 所在的 /v1。', 'x-hot': false },
-      [`${K}.asr.manageServer`]: { type: 'boolean', title: '托管 whisper.cpp 服务', description: '端点没有服务在跑时自己启动一个。', 'x-hot': false },
-      [`${K}.asr.serverFile`]: { type: 'string', title: 'whisper-server 程序', description: '留空用面板里安装的运行时。', 'x-path': { kind: 'file' }, 'x-hot': false },
-      [`${K}.asr.modelFile`]: { type: 'string', title: '模型文件', description: '留空用面板里下载的模型。', 'x-path': { kind: 'file', extensions: ['.bin'] }, 'x-hot': false },
-      [`${K}.asr.threads`]: { type: 'integer', title: 'CPU 线程', minimum: 0, maximum: 64, description: '0 = whisper.cpp 默认。', 'x-hot': false },
+      [`${K}.asr.engine`]: { type: 'string', title: '识别引擎', enum: ['funasr', 'system'], description: 'funasr 用 FunASR 的 SenseVoiceSmall,在本机识别,中文准,首次要下载约 240 MB 的模型;system 用 Windows 自带的语音识别,不用下载,准确度低一些(只在 Windows 上有)。', 'x-hot': true },
+      [`${K}.asr.language`]: { type: 'string', title: '语言', description: 'zh、en、ja、ko、yue,或 auto 让模型自己判断。', 'x-hot': true },
+      [`${K}.asr.threads`]: { type: 'integer', title: 'CPU 线程', minimum: 0, maximum: 16, description: 'FunASR 一次识别用几个线程,0 = 2。', 'x-hot': true },
       [`${K}.asr.simplified`]: { type: 'boolean', title: '转成简体', 'x-hot': true },
       [`${K}.asr.segment.thresholdDb`]: { type: 'number', title: '说话门槛', minimum: -80, maximum: 0, 'x-suffix': 'dBFS', 'x-hot': true },
       [`${K}.asr.segment.silenceMs`]: { type: 'integer', title: '一句结束的静音', minimum: 200, maximum: 5000, 'x-suffix': 'ms', 'x-hot': true },

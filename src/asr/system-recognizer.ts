@@ -5,7 +5,7 @@
  * shows what it hears before the sentence ends.
  *
  * Nothing to download: every Windows has System.Speech, and a Chinese Windows has the zh-CN
- * recognizer. It is less accurate than whisper.cpp's small model, which stays the upgrade.
+ * recognizer. It is less accurate than FunASR's SenseVoice, which is the default.
  *
  * The script goes in through `-EncodedCommand`, so neither the execution policy nor the
  * console code page touches it; its output escapes everything outside ASCII for the same reason.
@@ -16,13 +16,13 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Logger } from 'cortico/core/types.ts';
-import type { TranscribeResult } from './client.ts';
+import type { TranscribeResult } from './result.ts';
 
 export type SystemPhase = 'stopped' | 'starting' | 'running' | 'error';
 
 export interface SystemRecognizerState {
   phase: SystemPhase;
-  /** What the panel shows where the whisper server shows its URL. */
+  /** What the panel shows as the engine's address. */
   url: string;
   pid: number | null;
   detail: string | null;
