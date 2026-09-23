@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dryMountWorld } from 'cortico/extensions/dry-mount.ts';
 import { DESKTOP_PET } from '../src/definition.ts';
 import { DESKTOP_PET_DEFAULTS, type DesktopPetConfigSection } from '../src/config.ts';
-import { DesktopPetWorld } from '../src/world.ts';
+import { DesktopPetWorld, type DesktopPetWorldOptions, type PetBotControls } from '../src/world.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { FakePage } from './helpers/page.ts';
 
 const ctx = { role: 'main', log: new FakeHost().log };
 
-function makeWorld(patch: (c: DesktopPetConfigSection) => void = () => {}) {
+function makeWorld(patch: (c: DesktopPetConfigSection) => void = () => {}, extra: Partial<DesktopPetWorldOptions> = {}) {
   const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
   cfg.enabled = true;
   cfg.port = 0;
@@ -25,6 +25,7 @@ function makeWorld(patch: (c: DesktopPetConfigSection) => void = () => {}) {
     cfg, timezone: 'Asia/Shanghai',
     persist: (p) => { persisted.push(p); Object.assign(cfg, p); },
     runtimesRoot: () => join(dir, 'runtimes'), modelsDir: () => join(dir, 'models'),
+    ...extra,
   });
   return { world, cfg, persisted };
 }
@@ -38,8 +39,8 @@ afterEach(async () => {
   cleanup = [];
 });
 
-async function mounted(patch?: (c: DesktopPetConfigSection) => void) {
-  const made = makeWorld(patch);
+async function mounted(patch?: (c: DesktopPetConfigSection) => void, extra?: Partial<DesktopPetWorldOptions>) {
+  const made = makeWorld(patch, extra);
   const host = new FakeHost();
   await made.world.start(host);
   cleanup.push(() => made.world.stop());
@@ -219,6 +220,56 @@ describe('with a pet page', () => {
     expect((await win.next((m) => m.t === 'prefs')).theme).toBe(theme);
     expect(persisted).toContainEqual({ theme });
     expect((await (await fetch(`${origin(world)}/api/state`)).json()).theme).toBe(theme);
+  });
+
+  it('confirm resolves from the bubble without an event to the bot', async () => {
+    const { world, host } = await mounted();
+    expect(await world.confirm('可以吗?', ['可以', '不行'])).toBe('unavailable');
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+    const yes = world.confirm('可以吗?', ['可以', '不行']);
+    const c1 = await page.next((m) => m.t === 'confirm');
+    expect(c1).toMatchObject({ question: '可以吗?', options: ['可以', '不行'] });
+    page.send({ t: 'confirmed', id: c1.id, index: 0 });
+    expect(await yes).toBe('yes');
+    const closed = world.confirm('再问一次?', ['可以', '不行']);
+    page.send({ t: 'confirmed', id: (await page.next((m) => m.t === 'confirm')).id, index: null });
+    expect(await closed).toBe('dismissed');
+    const gone = world.confirm('还在吗?', ['可以', '不行']);
+    await page.next((m) => m.t === 'confirm');
+    await page.close();
+    expect(await gone).toBe('unavailable');
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('the menu header carries the bot and its run controls; clicks reach them', async () => {
+    const calls: string[] = [];
+    let paused = false;
+    const controls: PetBotControls = {
+      isPaused: () => paused,
+      setPaused: (p) => { paused = p; calls.push(p ? 'pause' : 'resume'); },
+      openSettings: () => calls.push('settings'),
+      quit: () => calls.push('quit'),
+      quitLabel: '退出 App',
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'pet-avatar-'));
+    const avatarFile = join(dir, 'avatar.png');
+    writeFileSync(avatarFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const { world } = await mounted(undefined, { botName: 'Bot', avatarFile, controls });
+    const res = await fetch(`${origin(world)}/api/avatar`);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    const win = await FakePage.open(origin(world), 'role=pet&host=window');
+    cleanup.push(() => win.close());
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    const state = await (await fetch(`${origin(world)}/api/state`)).json() as { bot: Record<string, unknown> };
+    expect(state.bot).toMatchObject({ name: 'Bot', controls: true, paused: false, quitLabel: '退出 App', avatar: expect.any(String) });
+    win.send({ t: 'control', action: 'pause' });
+    expect((await win.next((m) => m.t === 'prefs')).bot).toMatchObject({ paused: true });
+    tab.send({ t: 'control', action: 'settings' });
+    tab.send({ t: 'control', action: 'quit' });
+    await expect.poll(() => calls).toEqual(['pause', 'settings', 'quit']);
   });
 
   it('rejects requests whose Host is not a loopback name', async () => {

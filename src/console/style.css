@@ -3,4 +3,5 @@
 .pet-meter{position:relative; height:10px; border-radius:999px; background:var(--line, #e2dfe8); overflow:hidden; margin:4px 0 8px}
 .pet-meterfill{position:absolute; left:0; top:0; bottom:0; width:0; background:var(--muted, #6a6577); transition:width .08s linear}
 .pet-meterfill.on{background:var(--accent, #00a870)}
+.pet-meter.open{box-shadow:0 0 0 2px var(--accent, #00a870)}
 .pet-metermark{position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--text, #1b1626)}

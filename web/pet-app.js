@@ -8,7 +8,7 @@
  * window ignores the mouse except over the figure, a bubble, the menu or the hover buttons.
  * Colors follow the World's `theme` through `data-theme` on the root element.
  */
-import { applyTheme, createPet, createSfx, clamp, f, normalizeSkin, skinCss, EXPRESSIONS, ICONS } from './pet-core.js';
+import { applyTheme, createPet, createSfx, clamp, f, mini, normalizeSkin, skinCss, EXPRESSIONS, ICONS } from './pet-core.js';
 
 const $ = (s) => document.querySelector(s);
 const host = window.petHost || null;
@@ -20,7 +20,7 @@ const tools = $('#tools'), toolChat = $('#toolChat'), toolTheme = $('#toolTheme'
 const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
 
-const prefs = { roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false };
+const prefs = { roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false, micDevice: '', bot: null };
 const sfx = createSfx();
 if (host) sfx.unlock();
 else ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => sfx.unlock(), { capture: true }));
@@ -34,6 +34,7 @@ const ctl = createPet(
     bounds: () => ({ W: innerWidth, H: innerHeight, floorY: innerHeight - floorGap(), S: .42 * prefs.scale }),
     onEvent: (kind, d) => onBody(kind, d),
     dialogOpen: () => !!item || !!listen.phase,
+    enter: 'drop',
   },
 );
 addEventListener('resize', () => ctl.resize());
@@ -63,7 +64,9 @@ function applyPrefs(p) {
   if (p.theme === 'dark' || p.theme === 'light') { prefs.theme = p.theme; applyTheme(p.theme, toolTheme); }
   if (typeof p.scale === 'number') { prefs.scale = p.scale; ctl.resize(); }
   if (typeof p.user === 'string') prefs.user = p.user;
+  if (typeof p.micDevice === 'string' && p.micDevice !== prefs.micDevice) { prefs.micDevice = p.micDevice; stopMic(); }
   if (typeof p.mic === 'boolean') { prefs.mic = p.mic; p.mic && !watching ? startMic() : stopMic(); }
+  if (p.bot) { prefs.bot = p.bot; if (!menu.hidden) renderMenuHead(); }
   if (typeof p.thinking === 'boolean') ctl.setThinking(p.thinking);
 }
 
@@ -73,6 +76,7 @@ function onOrder(m) {
     case 'watching': watching = true; stopMic(); break;
     case 'say': dropAsks(); queue.push({ kind: 'say', id: m.id, beats: m.beats, i: -1 }); ctl.holdRoam(20); break;
     case 'ask': dropAsks(); queue.push({ kind: 'ask', id: m.id, question: m.question, options: m.options || [], own: m.own !== false }); ctl.holdRoam(20); break;
+    case 'confirm': dropAsks(); queue.push({ kind: 'ask', confirm: true, id: m.id, question: m.question, options: m.options, own: false }); ctl.holdRoam(20); break;
     case 'walk': walk(m); break;
     case 'act': acts.push(...m.actions); ctl.holdRoam(20); break;
     case 'listen': onListen(m); break;
@@ -136,9 +140,10 @@ const queue = [];
 let item = null;
 const PAUSE = /[,。!?…、,.!?]/, SILENT = /[\s,。!?…、,.!?「」:()]/;
 
+/** A newer question replaces the bot's open one; a World's confirmation stays until answered. */
 function dropAsks() {
-  for (let i = queue.length - 1; i >= 0; i--) if (queue[i].kind === 'ask') queue.splice(i, 1);
-  if (item && item.kind === 'ask' && !item.answered) closeBubble();
+  for (let i = queue.length - 1; i >= 0; i--) if (queue[i].kind === 'ask' && !queue[i].confirm) queue.splice(i, 1);
+  if (item && item.kind === 'ask' && !item.answered && !item.confirm) closeBubble();
 }
 
 function openBubble(kind, html) {
@@ -245,7 +250,7 @@ function answer(node, a) {
   sfx.select();
   node.classList.add('chosen');
   bubble.querySelectorAll('.b-opt, .b-own').forEach((n) => { if (n !== node) n.classList.add('dim'); });
-  send({ t: 'answer', askId: it.id, ...a });
+  send(it.confirm ? { t: 'confirmed', id: it.id, index: a.index } : { t: 'answer', askId: it.id, ...a });
   ctl.setExpr('happy');
   setTimeout(() => { if (item === it) closeBubble(); }, 700);
 }
@@ -253,7 +258,7 @@ function dismissAsk() {
   const it = item;
   if (!it || it.kind !== 'ask' || it.answered) return;
   it.answered = true;
-  send({ t: 'answer', askId: it.id, dismissed: true });
+  send(it.confirm ? { t: 'confirmed', id: it.id, index: null } : { t: 'answer', askId: it.id, dismissed: true });
   closeBubble();
 }
 
@@ -326,7 +331,9 @@ async function startMic() {
   if (mic) return;
   mic = { starting: true };
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const audio = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (prefs.micDevice) audio.deviceId = { exact: prefs.micDevice };
+    const stream = await navigator.mediaDevices.getUserMedia({ audio });
     const ctx = new AudioContext({ sampleRate: 16000 });
     await ctx.audioWorklet.addModule('/web/mic-worklet.js');
     const src = ctx.createMediaStreamSource(stream);
@@ -336,11 +343,18 @@ async function startMic() {
     if (!prefs.mic || !mic) { stream.getTracks().forEach((t) => t.stop()); ctx.close(); mic = null; return; }
     mic = { stream, ctx, node };
     send({ t: 'mic', state: 'on', detail: stream.getAudioTracks()[0]?.label || null });
+    void reportDevices();
   } catch (err) {
     mic = null;
     send({ t: 'mic', state: err && err.name === 'NotAllowedError' ? 'denied' : 'error', detail: String(err && err.message || err) });
   }
 }
+/** Device labels are readable only after microphone access was granted. */
+async function reportDevices() {
+  const all = await navigator.mediaDevices.enumerateDevices();
+  send({ t: 'devices', list: all.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications').map((d) => ({ id: d.deviceId, label: d.label })) });
+}
+navigator.mediaDevices?.addEventListener('devicechange', () => { if (mic && !mic.starting) void reportDevices(); });
 function stopMic() {
   const m = mic;
   mic = null;
@@ -353,29 +367,94 @@ function stopMic() {
 /* ---------- menu ---------- */
 const ROAM = { free: '常走动', calm: '多待着', off: '不乱动' };
 function openMenu(x, y) {
-  const next = { free: 'calm', calm: 'off', off: 'free' };
   menu.innerHTML = '';
+  if (prefs.bot) {
+    menu.appendChild(Object.assign(document.createElement('div'), { className: 'm-head' }));
+    renderMenuHead();
+    menu.appendChild(document.createElement('hr'));
+  }
   const add = (label, val, fn) => {
     const b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem');
     b.innerHTML = `<span></span><span class="val"></span>`;
     b.firstChild.textContent = label; b.lastChild.textContent = val || '';
     b.addEventListener('click', () => { sfx.tick(); fn(); });
+    // pointing at another item folds an open submenu
+    b.addEventListener('pointerenter', () => { if (!b.classList.contains('has-sub')) closeSubmenu(); });
     menu.appendChild(b);
+    return b;
+  };
+  /** An item that unfolds its choices beside the menu, the current one checked. */
+  const choose = (label, choices, current, pick) => {
+    const b = add(label, choices[current], () => openSubmenu(b, choices, current, pick));
+    b.classList.add('has-sub');
+    b.setAttribute('aria-haspopup', 'menu');
+    b.addEventListener('pointerenter', () => openSubmenu(b, choices, current, pick));
   };
   add('说点什么', '', openInput);
   add('麦克风', prefs.mic ? '开' : '关', () => { send({ t: 'prefs', mic: !prefs.mic }); closeMenu(); });
-  add('自由活动', ROAM[prefs.roam], () => { send({ t: 'prefs', roam: next[prefs.roam] }); closeMenu(); });
+  choose('行为模式', ROAM, prefs.roam, (roam) => send({ t: 'prefs', roam }));
   add('音效', prefs.sound ? '开' : '关', () => { send({ t: 'prefs', sound: !prefs.sound }); closeMenu(); });
   menu.appendChild(document.createElement('hr'));
   add('装扮…', '', () => { closeMenu(); if (host?.openDress) host.openDress(); else window.open('/dress', '_blank'); });
   if (host?.hide) add('隐藏桌宠', '', () => { closeMenu(); host.hide(); });
   menu.hidden = false;
-  const r = menu.getBoundingClientRect();
-  menu.style.left = f(clamp(x, 8, innerWidth - r.width - 8)) + 'px';
-  menu.style.top = f(clamp(y - r.height, 8, innerHeight - r.height - 8)) + 'px';
+  // layout size: the opening animation scales the box, so its bounding rect is still shrunk here
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = f(clamp(x, 8, innerWidth - w - 8)) + 'px';
+  menu.style.top = f(clamp(y - h, 8, innerHeight - h - 8)) + 'px';
 }
-function closeMenu() { menu.hidden = true; }
+/** Avatar, name and the bot's run controls, when the World offers them. */
+function renderMenuHead(confirmQuit = false) {
+  const head = menu.querySelector('.m-head'), bot = prefs.bot;
+  if (!head || !bot) return;
+  head.innerHTML = '<span class="m-avatar"></span><span class="m-name"></span><span class="m-acts"></span>';
+  head.querySelector('.m-avatar').innerHTML = bot.avatar
+    ? `<img alt="" src="/api/avatar?v=${encodeURIComponent(bot.avatar)}">`
+    : `<svg viewBox="18 18 220 220" aria-hidden="true">${mini('neutral', ctl.skin)}</svg>`;
+  head.querySelector('.m-name').textContent = confirmQuit ? bot.quitPrompt : bot.name;
+  const acts = head.querySelector('.m-acts');
+  const act = (iconHtml, label, fn, cls = 'm-act') => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = cls; b.title = label; b.setAttribute('aria-label', label);
+    b.innerHTML = iconHtml;
+    b.addEventListener('click', (e) => { e.stopPropagation(); sfx.tick(); fn(); });
+    acts.appendChild(b);
+  };
+  if (!bot.controls) return;
+  if (confirmQuit) {
+    act(ICONS.power, bot.quitLabel, () => { closeMenu(); send({ t: 'control', action: 'quit' }); }, 'm-act danger');
+    act('<span>取消</span>', '取消', () => renderMenuHead(), 'm-act text');
+    return;
+  }
+  act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }));
+  act(ICONS.settings, '设置', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
+  act(ICONS.power, bot.quitLabel, () => renderMenuHead(true));
+}
+function openSubmenu(item, choices, current, pick) {
+  if (menu.querySelector('.submenu')?.dataset.for === item.firstChild.textContent) return;
+  closeSubmenu();
+  const sub = document.createElement('div');
+  sub.className = 'submenu';
+  sub.dataset.for = item.firstChild.textContent;
+  sub.setAttribute('role', 'menu');
+  for (const [value, label] of Object.entries(choices)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitemradio'); b.setAttribute('aria-checked', String(value === current));
+    b.innerHTML = '<span></span><span class="val"></span>';
+    b.firstChild.textContent = label; b.lastChild.textContent = value === current ? '✓' : '';
+    b.addEventListener('click', () => { sfx.tick(); pick(value); closeMenu(); });
+    sub.appendChild(b);
+  }
+  menu.appendChild(sub);
+  // beside the menu, on whichever side has room, level with the item
+  const r = menu.getBoundingClientRect(), w = sub.offsetWidth, h = sub.offsetHeight;
+  const right = r.left + menu.offsetWidth + 4 + w <= innerWidth - 8;
+  sub.style.left = f(right ? menu.offsetWidth + 4 : -w - 4) + 'px';
+  sub.style.top = f(clamp(item.offsetTop - 6, 8 - r.top, innerHeight - 8 - h - r.top)) + 'px';
+}
+function closeSubmenu() { menu.querySelector('.submenu')?.remove(); }
+function closeMenu() { menu.hidden = true; closeSubmenu(); }
 
 /* ---------- hover buttons: type a line, switch dark/light ---------- */
 /** Seconds the buttons stay after the pointer leaves both the pet and them. */

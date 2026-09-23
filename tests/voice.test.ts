@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DESKTOP_PET_DEFAULTS } from '../src/config.ts';
 import { DesktopPetWorld } from '../src/world.ts';
+import type { MicMode } from '../src/config.ts';
+import { parseHotkey } from '../src/asr/hotkey.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { FakePage } from './helpers/page.ts';
 
@@ -49,15 +51,28 @@ afterEach(async () => {
   cleanup = [];
 });
 
-async function setup(text: string) {
+/** A talk key the test presses; `problem` makes it unreadable. */
+function scriptedKey(problem?: string) {
+  const key = { press: (_down: boolean) => {}, codes: [] as number[] };
+  const watch = async (codes: number[], onChange: (down: boolean) => void) => {
+    if (problem) return problem;
+    key.codes = codes;
+    key.press = onChange;
+    return { stop: () => {} };
+  };
+  return { key, watch };
+}
+
+async function setup(text: string, mode: MicMode = 'always', watch?: ReturnType<typeof scriptedKey>['watch']) {
   const ep = await endpoint(text);
   cleanup.push(() => new Promise((r) => ep.server.close(() => r())));
   const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
   Object.assign(cfg, { enabled: true, port: 0 });
   cfg.window.enabled = false;
   cfg.asr.baseUrl = ep.url;
+  cfg.asr.mic.mode = mode;
   const dir = mkdtempSync(join(tmpdir(), 'pet-voice-'));
-  const world = new DesktopPetWorld({ cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm') });
+  const world = new DesktopPetWorld({ cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm'), watchHotkey: watch });
   const host = new FakeHost();
   await world.start(host);
   cleanup.push(() => world.stop());
@@ -87,6 +102,33 @@ describe('voice input', () => {
     for (const fr of [...tone(900, .3), ...tone(900, 0)]) page.audio(fr);
     await page.next((m) => m.t === 'listen' && m.phase === 'none');
     expect(host.events).toHaveLength(0);
+  });
+
+  it('hold: only audio while the talk key is down counts, and releasing the key ends the utterance', async () => {
+    const { key, watch } = scriptedKey();
+    const { ep, host, page, world } = await setup('帮我看看这个', 'hold', watch);
+    expect(key.codes).toEqual(parseHotkey(DESKTOP_PET_DEFAULTS.asr.mic.hotkey));
+    for (const fr of tone(600, .3)) page.audio(fr);
+    await new Promise((r) => setTimeout(r, 200));
+    expect((world.voiceState().counts as { utterances: number }).utterances).toBe(0);
+    key.press(true);
+    await page.next((m) => m.t === 'listen' && m.phase === 'start');
+    // quiet speech still counts while the key is held, pauses included
+    for (const fr of [...tone(500, .01), ...tone(800, 0), ...tone(300, .01)]) page.audio(fr);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ep.bodies).toHaveLength(0);
+    key.press(false);
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+    expect(host.events[0].text).toBe('[语音] 主人:帮我看看这个');
+    expect(ep.bodies).toHaveLength(1);
+  });
+
+  it('a talk key that cannot be read falls back to listening all the time', async () => {
+    const { watch } = scriptedKey('no keyboard here');
+    const { host, page, world } = await setup('还是听得见', 'hold', watch);
+    expect(world.voiceState().input).toMatchObject({ mode: 'hold', effectiveMode: 'always', hotkeyProblem: 'no keyboard here', open: true });
+    for (const fr of [...tone(900, .3), ...tone(900, 0)]) page.audio(fr);
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
   });
 
   it('ignores quiet input', async () => {

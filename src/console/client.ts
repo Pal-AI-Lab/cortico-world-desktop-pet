@@ -22,11 +22,39 @@ interface VoiceState {
   runtime: Artifact & { supported: boolean };
   models: Record<string, Artifact & { bytes: number }>;
   mic: { state: string; detail: string | null };
+  input: {
+    mode: MicMode;
+    hotkey: string;
+    deviceId: string;
+    /** `always` while the talk key cannot be read */
+    effectiveMode: MicMode;
+    hotkeyProblem: string | null;
+    open: boolean;
+    devices: Array<{ id: string; label: string }>;
+  };
   level: number;
   thresholdDb: number;
   recent: Array<{ text: string; at: number; ms: number; dropped?: boolean }>;
   counts: { utterances: number; delivered: number; dropped: number };
 }
+
+type MicMode = 'hold' | 'toggle' | 'always';
+const MODES: Record<MicMode, string> = { hold: '按住说话键时收音', toggle: '按一下说话键开始,再按一下停', always: '一直收音' };
+
+/** `KeyboardEvent.code` → the key names `src/asr/hotkey.ts` reads. */
+const CODE_KEYS: Record<string, string> = {
+  ControlLeft: 'LeftCtrl', ControlRight: 'RightCtrl', AltLeft: 'LeftAlt', AltRight: 'RightAlt',
+  ShiftLeft: 'LeftShift', ShiftRight: 'RightShift', MetaLeft: 'Win', MetaRight: 'RightWin',
+  Space: 'Space', Tab: 'Tab', CapsLock: 'CapsLock', Backquote: 'Backquote', Enter: 'Enter', Insert: 'Insert',
+  Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', ScrollLock: 'ScrollLock',
+};
+const keyOfCode = (code: string): string | null =>
+  CODE_KEYS[code] ?? (/^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digitd$/.test(code) ? code.slice(5) : /^Fd{1,2}$/.test(code) ? code : null);
+const KEY_LABELS: Record<string, string> = {
+  LeftCtrl: '左 Ctrl', RightCtrl: '右 Ctrl', LeftAlt: '左 Alt', RightAlt: '右 Alt', LeftShift: '左 Shift', RightShift: '右 Shift',
+  RightWin: '右 Win', Backquote: '`', Mouse3: '鼠标中键', Mouse4: '鼠标侧键 4', Mouse5: '鼠标侧键 5',
+};
+const hotkeyLabel = (hotkey: string) => hotkey.split('+').map((k) => KEY_LABELS[k] ?? k).join(' + ');
 
 const MB = (n: number) => `${Math.round(n / 1048576)} MB`;
 const progress = (a: Artifact) => (a.total ? `${Math.round((a.done / a.total) * 100)}%` : MB(a.done));
@@ -140,13 +168,22 @@ const voicePanel: ConsolePanel = {
     rt.acts.append(modelSel, btnInstall);
 
     const micRow = statusRow(ctx, '麦克风');
+    const deviceSel = ui.select();
+    micRow.acts.append(deviceSel);
+
+    const modeRow = statusRow(ctx, '收音方式');
+    const modeSel = ui.select();
+    modeSel.replaceChildren(...(Object.keys(MODES) as MicMode[]).map((m) => { const o = ui.h('option', null, MODES[m]); o.value = m; return o; }));
+    const keyBtn = ui.button('', { size: 'sm' });
+    modeRow.acts.append(modeSel, keyBtn);
+
     const meter = ui.h('div', 'pet-meter');
     const fill = ui.h('div', 'pet-meterfill');
     const mark = ui.h('div', 'pet-metermark');
     meter.append(fill, mark);
 
     const log = ui.log({ max: 100 });
-    s.append(bar, srv.row, rt.row, micRow.row, meter, ui.section('识别结果', '划掉的是太短或疑似幻觉、没有发出去的'), log.el);
+    s.append(bar, srv.row, rt.row, micRow.row, modeRow.row, meter, ui.section('识别结果', '划掉的是太短或疑似幻觉、没有发出去的'), log.el);
 
     let st: VoiceState | null = null;
     let seen = 0;
@@ -179,6 +216,22 @@ const voicePanel: ConsolePanel = {
 
       const mic = next.mic;
       micRow.set({ on: '收音中', off: '没在收', denied: '被拒绝', error: '出错' }[mic.state] ?? mic.state, mic.state === 'on' ? 'on' : mic.state === 'off' ? 'off' : 'bad', mic.detail ?? '');
+      const input = next.input;
+      const choices = [{ id: '', label: '系统默认' }, ...input.devices];
+      if (input.deviceId && !choices.some((d) => d.id === input.deviceId)) choices.push({ id: input.deviceId, label: '之前选的设备(现在找不到)' });
+      if (deviceSel.dataset.list !== JSON.stringify(choices)) {
+        deviceSel.dataset.list = JSON.stringify(choices);
+        deviceSel.replaceChildren(...choices.map((d, i) => { const o = ui.h('option', null, d.label || `麦克风 ${i}`); o.value = d.id; return o; }));
+      }
+      if (document.activeElement !== deviceSel) deviceSel.value = input.deviceId;
+      if (document.activeElement !== modeSel) modeSel.value = input.mode;
+      if (!capturing) keyBtn.textContent = `说话键:${hotkeyLabel(input.hotkey)}`;
+      keyBtn.hidden = input.mode === 'always';
+      const how = input.effectiveMode === 'hold' ? `按住 ${hotkeyLabel(input.hotkey)} 说话`
+        : input.effectiveMode === 'toggle' ? `按 ${hotkeyLabel(input.hotkey)} 开关收音` : '一直收音';
+      modeRow.set(input.open ? '正在收音' : '等说话键', input.open ? 'on' : 'off', input.hotkeyProblem ? `${input.hotkeyProblem},改为一直收音` : how);
+      // the loudness threshold only decides where speech starts when the key is not held down
+      mark.hidden = input.effectiveMode === 'hold';
       mark.style.left = `${meterPct(next.thresholdDb)}%`;
       for (const line of next.recent) {
         if (line.at <= seen) continue;
@@ -194,12 +247,53 @@ const voicePanel: ConsolePanel = {
     btnStart.addEventListener('click', call('start'));
     btnStop.addEventListener('click', call('stop'));
     btnInstall.addEventListener('click', () => void call('install', [modelSel.value])());
+    modeSel.addEventListener('change', () => void call('setMic', [{ mode: modeSel.value }])());
+    deviceSel.addEventListener('change', () => void call('setMic', [{ deviceId: deviceSel.value }])());
+
+    // The talk key is captured on the first release: every key down until then is part of it.
+    let capturing = false;
+    const held: string[] = [];
+    const finishCapture = (hotkey: string | null) => {
+      capturing = false;
+      held.length = 0;
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      window.removeEventListener('pointerdown', onPointer, true);
+      if (hotkey) void call('setMic', [{ hotkey }])();
+      else void refresh();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.code === 'Escape') { finishCapture(null); return; }
+      const k = keyOfCode(e.code);
+      if (k && !held.includes(k)) held.push(k);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      if (held.length) finishCapture(held.join('+'));
+    };
+    const onPointer = (e: PointerEvent) => {
+      const k = ({ 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' } as Record<number, string>)[e.button];
+      if (!k) return;
+      e.preventDefault(); e.stopPropagation();
+      finishCapture([...held, k].join('+'));
+    };
+    keyBtn.addEventListener('click', () => {
+      if (capturing) { finishCapture(null); return; }
+      capturing = true;
+      keyBtn.textContent = '按下新的说话键…(Esc 取消)';
+      window.addEventListener('keydown', onKeyDown, true);
+      window.addEventListener('keyup', onKeyUp, true);
+      window.addEventListener('pointerdown', onPointer, true);
+    });
+    ctx.own({ dispose: () => { if (capturing) finishCapture(null); } });
     ctx.stream({
       message: (text: string) => {
-        const f = JSON.parse(text) as { type: string; level?: number; speaking?: boolean };
+        const f = JSON.parse(text) as { type: string; level?: number; speaking?: boolean; open?: boolean };
         if (f.type === 'level' && typeof f.level === 'number') {
           fill.style.width = `${meterPct(f.level)}%`;
           fill.classList.toggle('on', !!f.speaking);
+          meter.classList.toggle('open', !!f.open);
         } else void refresh();
       },
     });

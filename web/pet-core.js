@@ -342,6 +342,14 @@ export const ICONS = {
   chat: icon('<path d="M6 4.5h12a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-6l-4.5 3.5v-3.5H6a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3z"/>'),
   moon: icon('<path d="M20 14.6A8.2 8.2 0 1 1 9.4 4a6.6 6.6 0 0 0 10.6 10.6z"/>'),
   sun: icon('<circle cx="12" cy="12" r="4"/><path d="M12 2.8v1.6M12 19.6v1.6M2.8 12h1.6M19.6 12h1.6M5.5 5.5l1.1 1.1M17.4 17.4l1.1 1.1M5.5 18.5l1.1-1.1M17.4 6.6l1.1-1.1"/>'),
+  play: icon('<path d="M8 5.5v13l10.5-6.5z"/>'),
+  pause: icon('<path d="M9 5.5v13M15 5.5v13"/>'),
+  // eight flat teeth around a hub
+  settings: icon(`<path d="${Array.from({ length: 32 }, (_, i) => {
+    const a = (i - .5) * Math.PI / 16, r = i % 4 < 2 ? 9.6 : 7.2;
+    return `${i ? 'L' : 'M'}${f(12 + r * Math.cos(a))} ${f(12 + r * Math.sin(a))}`;
+  }).join('')}Z"/><circle cx="12" cy="12" r="3"/>`),
+  power: icon('<path d="M12 3.5v8M7.2 6.3a8 8 0 1 0 9.6 0"/>'),
 };
 /** Sets `theme` ('dark' | 'light') on the page; `button`, when given, shows the mode a click switches to. */
 export function applyTheme(theme, button) {
@@ -473,6 +481,7 @@ export const MOTIONS = ['stand', 'jump', 'hop', 'look', 'turn', 'nod', 'shake', 
  * `els`: { svg, petG, shadowEl, fxG } inside a stage element that receives pointer events.
  * `opts.bounds()` returns { W, H, floorY, S } in stage pixels.
  * `opts.onEvent(kind, detail)` reports what happened to the body: arrived, interrupted, touch, mode.
+ * `opts.enter: 'drop'` starts the pet above the top edge, falling to the floor.
  */
 export function createPet(els, opts) {
   const { petG, shadowEl, fxG } = els;
@@ -502,7 +511,10 @@ export function createPet(els, opts) {
   function resize() {
     const b = opts.bounds();
     W = b.W; H = b.H; floorY = b.floorY; S = b.S;
-    if (!pet.placed && W > 0) { pet.x = opts.startX != null ? opts.startX : W * .7; pet.placed = true; }
+    if (!pet.placed && W > 0) {
+      pet.x = opts.startX != null ? opts.startX : W * .7; pet.placed = true;
+      if (opts.enter === 'drop') { pet.fy = -8; pet.vy = 0; pet.vx = 0; pet.airKind = 'drop'; setMode('air'); }
+    }
     pet.x = clamp(pet.x, minX(), maxX());
     pet.target = clamp(pet.target, minX(), maxX());
     if (pet.mode !== 'air' && pet.mode !== 'drag') pet.fy = floorY;
@@ -596,6 +608,7 @@ export function createPet(els, opts) {
     const m = pet.mode;
     if (m === 'drag') return 'dragged';
     if (m === 'air' && pet.airKind === 'throw') return pet.vy < 0 ? 'dragged' : 'surprised';
+    if (m === 'air' && pet.airKind === 'drop') return 'surprised';
     if (m === 'dizzy') return pet.modeT < 2.4 ? 'dizzy' : 'squeeze';
     if (m === 'wake') return pet.startle ? 'surprised' : 'waking';
     if (pet.listening && m !== 'sleep') return 'listening';
@@ -873,11 +886,12 @@ export function createPet(els, opts) {
     const impact = pet.vy, kind = pet.airKind;
     pet.fy = floorY; pet.vy = 0; pet.vx = 0;
     pet.sqv += clamp(impact * .0024, .8, 4.5);
-    sfx.land(kind === 'throw' && impact > 1000);
+    sfx.land(kind !== 'jump' && impact > 1000);
     dustAt(128, impact > 900 ? 7 : 3, 70);
     if (kind === 'throw' && impact > 1000) { setMode('dizzy'); onEvent('touch', { kind: 'crash' }); return; }
     setMode('land');
     if (kind === 'throw') { pet.expr = 'surprised'; pet.exprUntil = T + .9; pet.nextAt = T + 2; }
+    else if (kind === 'drop') { pet.expr = 'happy'; pet.exprUntil = T + 1.6; pet.nextAt = T + 2.6; }
     else pet.nextAt = T + rnd(.8, 2);
   }
 

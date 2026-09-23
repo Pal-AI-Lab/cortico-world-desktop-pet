@@ -114,7 +114,23 @@ body.desk .floor{display:none}
 }
 .menu button:hover{background:var(--bg)}
 .menu .val{color:var(--muted); font-size:12.5px}
+.menu .has-sub .val::after{content:"›"; margin-left:6px}
+.submenu{
+  position:absolute; min-width:120px; padding:6px; border-radius:14px;
+  background:var(--surface); border:2px solid var(--skin-ink); box-shadow:0 10px 26px var(--shadow);
+  animation:bubble-in .14s cubic-bezier(.3,1.5,.5,1);
+}
 .menu hr{border:0; border-top:1px solid var(--line); margin:4px 6px}
+.menu .m-head{display:flex; align-items:center; gap:8px; padding:3px 2px 3px 6px}
+.m-avatar{flex:none; width:30px; height:30px; border-radius:50%; overflow:hidden; background:var(--bg); border:1.5px solid var(--line)}
+.m-avatar img, .m-avatar svg{width:100%; height:100%; display:block; object-fit:cover}
+.m-name{flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.m-acts{flex:none; display:flex; gap:2px}
+.menu .m-act{justify-content:center; width:28px; height:28px; padding:0; border-radius:8px; color:var(--muted)}
+.menu .m-act:hover{color:var(--text)}
+.menu .m-act svg{width:16px; height:16px; display:block}
+.menu .m-act.danger{color:var(--anger)}
+.menu .m-act.text{width:auto; padding:0 8px; font-size:12.5px}
 /* icon buttons */
 .tools{position:fixed; left:0; top:0; z-index:4; display:flex; flex-direction:column; gap:8px; animation:bubble-in .18s cubic-bezier(.3,1.5,.5,1)}
 .tools[hidden]{display:none}

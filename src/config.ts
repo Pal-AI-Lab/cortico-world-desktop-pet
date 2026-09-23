@@ -19,6 +19,8 @@ export type RoamMode = 'free' | 'calm' | 'off';
 /** Which side of each palette the pet pages draw: dark = light figure for dark surroundings. */
 export type PetTheme = 'dark' | 'light';
 export type TouchTrigger = 'debounce' | 'piggyback';
+/** hold: listen while the talk key is held; toggle: each press starts or stops listening; always: listen all the time. */
+export type MicMode = 'hold' | 'toggle' | 'always';
 export type WhisperModel = 'base-q5_1' | 'small-q5_1' | 'large-v3-turbo-q5_0';
 
 export interface DesktopPetConfigSection extends WorldSection {
@@ -60,6 +62,13 @@ export interface DesktopPetConfigSection extends WorldSection {
     simplified: boolean;
     timeoutMs: number;
     segment: SegmentConfig;
+    mic: {
+      mode: MicMode;
+      /** Talk key for hold and toggle, names joined by `+` (see `src/asr/hotkey.ts`). */
+      hotkey: string;
+      /** Browser media device id of the microphone; empty uses the system default. */
+      deviceId: string;
+    };
   };
 }
 
@@ -88,6 +97,7 @@ export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
     simplified: true,
     timeoutMs: 20_000,
     segment: { thresholdDb: -42, minSpeechMs: 180, dispatchSilenceMs: 250, silenceMs: 600, maxUtteranceMs: 15_000, preRollMs: 320, minUtteranceMs: 350 },
+    mic: { mode: 'hold', hotkey: 'RightCtrl', deviceId: '' },
   },
 };
 
@@ -101,7 +111,7 @@ export const DESKTOP_PET_CONFIG_GROUP: ConfigGroup = {
     title: '桌宠',
     properties: {
       [`${K}.user`]: { type: 'string', title: '怎么称呼你', description: '语音、打字和互动事件里用这个名字指代你。', 'x-hot': true },
-      [`${K}.roam`]: { type: 'string', title: '自由活动', enum: ['free', 'calm', 'off'], description: 'free 常走动;calm 多待着;off 只做被要求的动作。', 'x-hot': true },
+      [`${K}.roam`]: { type: 'string', title: '行为模式', enum: ['free', 'calm', 'off'], description: 'free 常走动;calm 多待着;off 只做被要求的动作。', 'x-hot': true },
       [`${K}.sound`]: { type: 'boolean', title: '音效', 'x-hot': true },
       [`${K}.theme`]: { type: 'string', title: '黑白模式', enum: ['dark', 'light'], description: 'dark 夜间:浅色身体、深色气泡;light 白天:深色身体、浅色气泡。', 'x-hot': true },
       [`${K}.window.enabled`]: { type: 'boolean', title: '启动时打开桌宠窗口', 'x-hot': false },

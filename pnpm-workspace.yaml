@@ -1,5 +1,6 @@
 allowBuilds:
   electron: true
   esbuild: true
+  koffi: true
 minimumReleaseAgeExclude:
   - electron@44.4.4

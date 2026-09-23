@@ -5,10 +5,11 @@
  * - `/pet`: the pet itself. In the pet window it is transparent and click-through outside
  *   the figure; in a browser tab it draws a floor.
  * - `/dress`: the dressing page; changes go through `POST /api/skin` and `POST /api/prefs`.
+ * - `/api/avatar`: the bot's avatar for the menu header, 404 until one exists.
  * - `/socket?role=pet|dress&host=window|tab`: one live pet connection plus any number of
  *   pages that only receive skin and preference updates. A newer pet connection replaces the
  *   live one, except that a browser tab only watches while the pet window is connected. A
- *   watching tab still sends typed text and preference changes.
+ *   watching tab still sends typed text, preference changes and run-control clicks.
  *   Binary frames from the pet connection are 16 kHz mono PCM16 microphone audio.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -27,6 +28,8 @@ const MIME: Record<string, string> = {
 const PAGES: Record<string, string> = { '/pet': 'pet.html', '/dress': 'dress.html' };
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 const PORT_ATTEMPTS = 10;
+/** What a watching pet page may still send: input that is the person's whichever page it came from. */
+const WATCHER_MESSAGES = new Set(['text', 'prefs', 'control']);
 
 export type PageMessage = Record<string, unknown> & { t: string };
 
@@ -42,6 +45,8 @@ export interface PetServerOptions {
   /** A dressing page saved a skin. */
   onSkin(skin: unknown): void;
   onPrefs(prefs: Record<string, unknown>): void;
+  /** PNG served at `/api/avatar`. */
+  avatarFile?: string;
 }
 
 export class PetServer {
@@ -167,7 +172,7 @@ export class PetServer {
       ws.send(JSON.stringify({ t: 'watching' }));
       ws.on('message', (data, isBinary) => {
         const msg = isBinary ? null : parse(data.toString());
-        if (msg && (msg.t === 'text' || msg.t === 'prefs')) this.opts.onPetMessage(msg);
+        if (msg && WATCHER_MESSAGES.has(msg.t)) this.opts.onPetMessage(msg);
       });
     }
     this.dressers.add(ws);
@@ -179,6 +184,12 @@ export class PetServer {
     const url = new URL(req.url ?? '/', 'http://x');
     const path = url.pathname;
     if (req.method === 'GET' && path === '/api/state') return json(res, 200, this.opts.snapshot());
+    if (req.method === 'GET' && path === '/api/avatar') {
+      const bytes = this.opts.avatarFile ? await readFile(this.opts.avatarFile).catch(() => null) : null;
+      if (!bytes) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-cache' }).end(bytes);
+      return;
+    }
     if (req.method === 'POST' && (path === '/api/skin' || path === '/api/prefs')) {
       const body = await readBody(req);
       const msg = body ? parse(body) : null;

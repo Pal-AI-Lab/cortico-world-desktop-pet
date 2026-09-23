@@ -11,6 +11,7 @@
  * `window.enabled`) and the managed whisper.cpp server (when voice input is on and nothing
  * else answers at the endpoint).
  */
+import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import type {
@@ -21,13 +22,14 @@ import type { Language } from 'cortico/core/language.ts';
 import type { DeepPartial } from 'cortico/world.ts';
 import {
   DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID,
-  type DesktopPetConfigSection, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
+  type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
 } from './config.ts';
 import { PetServer, type PageMessage } from './server.ts';
 import { WindowHost, resolveHostCommand } from './window-host.ts';
 import { RuntimeStore, WHISPER_MODELS, type ArtifactState } from './runtime/store.ts';
 import { WhisperServer, type WhisperServerState } from './asr/whisper-server.ts';
-import { Packer, Segmenter, type Utterance } from './asr/segmenter.ts';
+import { Packer, Segmenter, rmsDb, type SegmentConfig, type Utterance } from './asr/segmenter.ts';
+import { parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
 import { looksHallucinated, transcribe } from './asr/client.ts';
 import { toSimplified } from './asr/simplify.ts';
 import { estimateSeconds, parseActions, parseScript, vocabTable } from './script.ts';
@@ -45,6 +47,26 @@ const SAMPLE_RATE = 16_000;
 const WALK_TIMEOUT_MS = 30_000;
 /** Touches of one kind closer than this are reported as one event with a count. */
 const TOUCH_MERGE_MS = 2500;
+/** How long a confirmation bubble waits for an answer. */
+const CONFIRM_TIMEOUT_MS = 60_000;
+/** Talk-key polling interval: well under the shortest key tap. */
+const HOTKEY_POLL_MS = 30;
+
+/**
+ * Run controls an embedding app lends the pet's menu. Without them the menu header shows only
+ * the avatar and the name.
+ */
+export interface PetBotControls {
+  isPaused(): boolean;
+  setPaused(paused: boolean): void;
+  openSettings(): void;
+  quit(): void;
+  /** The power button's label, e.g. "退出 CortiCompanion". */
+  quitLabel: string;
+}
+
+/** How a confirmation ended: one of the two choices, closed, no answer in time, or no pet page to ask on. */
+export type ConfirmResult = 'yes' | 'no' | 'dismissed' | 'timeout' | 'unavailable';
 
 export interface DesktopPetWorldOptions {
   cfg: DesktopPetConfigSection;
@@ -53,6 +75,13 @@ export interface DesktopPetWorldOptions {
   runtimesRoot: () => string;
   modelsDir: () => string;
   fetchImpl?: typeof fetch;
+  /** Shown in the menu header. */
+  botName?: string;
+  /** PNG shown as the avatar in the menu header, when it exists. */
+  avatarFile?: string;
+  controls?: PetBotControls;
+  /** Reads the talk key; tests pass a scripted one. */
+  watchHotkey?: typeof watchHotkey;
 }
 
 interface PendingWalk {
@@ -77,6 +106,11 @@ interface TouchBatch {
 }
 
 interface HeardLine { text: string; at: number; ms: number; dropped?: boolean }
+
+interface PendingConfirm {
+  resolve: (result: ConfirmResult) => void;
+  timer: NodeJS.Timeout;
+}
 
 let seq = 0;
 const nextId = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -110,10 +144,19 @@ export class DesktopPetWorld implements World {
   private readonly heard: HeardLine[] = [];
   private readonly counts = { utterances: 0, delivered: 0, dropped: 0 };
   private micState: { state: string; detail: string | null } = { state: 'off', detail: null };
+  private devices: Array<{ id: string; label: string }> = [];
+  private readonly confirms = new Map<string, PendingConfirm>();
+  /** The talk key is down (hold) or was switched on (toggle). */
+  private talking = false;
+  private keyWatcher: KeyWatcher | null = null;
+  /** Why the talk key cannot be read; the gate then stays open as in `always`. */
+  private hotkeyProblem: string | null = null;
+  private hotkeyKey = '';
+  private level = -100;
 
   constructor(private readonly opts: DesktopPetWorldOptions) {
     this.cfg = opts.cfg;
-    this.segmenter = new Segmenter(opts.cfg.asr.segment, FRAME_MS);
+    this.segmenter = new Segmenter(this.segmentConfig(), FRAME_MS);
     this.store = new RuntimeStore({ runtimesRoot: opts.runtimesRoot, modelsDir: opts.modelsDir, fetchImpl: opts.fetchImpl });
     this.server = new PetServer({
       port: () => this.cfg.port,
@@ -125,6 +168,7 @@ export class DesktopPetWorld implements World {
       onPetDisconnect: () => this.onPageGone(),
       onSkin: (skin) => this.saveSkin(skin),
       onPrefs: (prefs) => this.savePrefs(prefs),
+      avatarFile: opts.avatarFile,
     });
   }
 
@@ -145,6 +189,7 @@ export class DesktopPetWorld implements World {
       fetchImpl: this.opts.fetchImpl,
     });
     if (this.cfg.asr.enabled && this.cfg.asr.manageServer) void this.startVoiceBackend();
+    await this.syncHotkey();
     this.prefsKey = this.prefsSignature();
     this.prefsTimer = setInterval(() => this.syncPrefs(), 1000);
   }
@@ -156,6 +201,10 @@ export class DesktopPetWorld implements World {
     this.packTimer = null;
     if (this.touch) clearTimeout(this.touch.timer);
     this.touch = null;
+    this.keyWatcher?.stop();
+    this.keyWatcher = null;
+    for (const c of this.confirms.values()) { clearTimeout(c.timer); c.resolve('unavailable'); }
+    this.confirms.clear();
     for (const w of this.walks.values()) { clearTimeout(w.timer); w.resolve('World 已停止,没走到。'); }
     this.walks.clear();
     for (const s of this.voiceSockets) s.close('stopped');
@@ -208,17 +257,36 @@ export class DesktopPetWorld implements World {
       scale: this.cfg.window.scale,
       user: this.cfg.user,
       mic: this.micWanted(),
+      micDevice: this.cfg.asr.mic.deviceId,
       thinking: this.thinking,
+      bot: this.botInfo(),
+    };
+  }
+
+  private botInfo(): Record<string, unknown> {
+    const c = this.opts.controls;
+    let avatar: string | null = null;
+    try { if (this.opts.avatarFile) avatar = String(statSync(this.opts.avatarFile).mtimeMs); } catch { /* no avatar yet */ }
+    return {
+      name: this.opts.botName ?? '',
+      avatar,
+      controls: !!c,
+      paused: c ? c.isPaused() : null,
+      quitLabel: c?.quitLabel ?? '',
+      quitPrompt: c ? `${c.quitLabel}?` : '',
     };
   }
 
   private prefsSignature(): string {
-    return JSON.stringify([this.cfg.roam, this.cfg.sound, this.cfg.theme, this.cfg.window.scale, this.cfg.user, this.micWanted(), this.cfg.skin]);
+    const s = this.snapshot();
+    delete s.thinking;
+    return JSON.stringify(s);
   }
 
   /** Config is a live object edited by the console; changes reach the pages within a second. */
   private syncPrefs(): void {
-    this.segmenter.configure(this.cfg.asr.segment);
+    this.segmenter.configure(this.segmentConfig());
+    void this.syncHotkey();
     const key = this.prefsSignature();
     if (key === this.prefsKey) return;
     this.prefsKey = key;
@@ -243,6 +311,14 @@ export class DesktopPetWorld implements World {
     if (typeof prefs.sound === 'boolean') patch.sound = prefs.sound;
     if (prefs.theme === 'dark' || prefs.theme === 'light') patch.theme = prefs.theme as PetTheme;
     if (typeof prefs.mic === 'boolean') patch.asr = { enabled: prefs.mic };
+    const mic = prefs.micSettings as Record<string, unknown> | undefined;
+    if (mic && typeof mic === 'object') {
+      const m: { mode?: MicMode; hotkey?: string; deviceId?: string } = {};
+      if (mic.mode === 'hold' || mic.mode === 'toggle' || mic.mode === 'always') m.mode = mic.mode;
+      if (typeof mic.hotkey === 'string' && parseHotkey(mic.hotkey)) m.hotkey = mic.hotkey;
+      if (typeof mic.deviceId === 'string') m.deviceId = mic.deviceId;
+      patch.asr = { ...patch.asr, mic: m };
+    }
     if (Object.keys(patch).length) this.opts.persist(patch);
     if (typeof prefs.mic === 'boolean' && prefs.mic && this.cfg.asr.manageServer) void this.startVoiceBackend();
     this.syncPrefs();
@@ -279,12 +355,51 @@ export class DesktopPetWorld implements World {
         return;
       }
       case 'prefs': return this.savePrefs(msg);
+      case 'devices': {
+        const list = Array.isArray(msg.list) ? msg.list : [];
+        this.devices = list
+          .filter((d): d is { id: string; label: string } => !!d && typeof (d as { id?: unknown }).id === 'string')
+          .map((d) => ({ id: d.id, label: typeof d.label === 'string' ? d.label : '' }));
+        return;
+      }
+      case 'confirmed': {
+        const c = this.confirms.get(String(msg.id));
+        if (!c) return;
+        this.confirms.delete(String(msg.id));
+        clearTimeout(c.timer);
+        c.resolve(msg.index === 0 ? 'yes' : msg.index === 1 ? 'no' : 'dismissed');
+        return;
+      }
+      case 'control': return this.onControl(String(msg.action));
     }
+  }
+
+  private onControl(action: string): void {
+    const c = this.opts.controls;
+    if (!c) return;
+    if (action === 'pause' || action === 'resume') c.setPaused(action === 'pause');
+    else if (action === 'settings') c.openSettings();
+    else if (action === 'quit') c.quit();
+    this.syncPrefs();
+  }
+
+  /**
+   * Asks the person in a bubble with two choices, the first one meaning yes. Answers never
+   * reach the bot as events; the caller gets them.
+   */
+  confirm(question: string, choices: [yes: string, no: string]): Promise<ConfirmResult> {
+    const id = nextId('k');
+    if (!this.server.sendPet({ t: 'confirm', id, question, options: choices })) return Promise.resolve('unavailable');
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.confirms.delete(id); resolve('timeout'); }, CONFIRM_TIMEOUT_MS);
+      this.confirms.set(id, { resolve, timer });
+    });
   }
 
   private onPageGone(): void {
     this.log?.info('桌宠页面断开');
     for (const [id, w] of this.walks) { clearTimeout(w.timer); w.resolve('没走到:桌宠窗口断开了。'); this.walks.delete(id); }
+    for (const [id, c] of this.confirms) { clearTimeout(c.timer); c.resolve('unavailable'); this.confirms.delete(id); }
     this.segmenter.flush();
     if (this.wasSpeaking) this.wasSpeaking = false;
   }
@@ -375,23 +490,91 @@ export class DesktopPetWorld implements World {
     return this.whisper.state();
   }
 
+  /* ---------- talk key ---------- */
+
+  /** The mode in force: hold and toggle fall back to always while the talk key cannot be read. */
+  private micMode(): MicMode {
+    return this.hotkeyProblem ? 'always' : this.cfg.asr.mic.mode;
+  }
+
+  /** Audio reaches the segmenter only while this is true. */
+  private gateOpen(): boolean {
+    return this.micMode() === 'always' || this.talking;
+  }
+
+  /**
+   * While the talk key is held everything counts as speech: the segmenter never waits for a
+   * loud onset or cuts at a pause, and releasing the key ends the utterance.
+   */
+  private segmentConfig(): SegmentConfig {
+    const seg = this.cfg.asr.segment;
+    return this.micMode() === 'hold' ? { ...seg, thresholdDb: -Infinity, minSpeechMs: 0 } : seg;
+  }
+
+  /** Starts, restarts or stops the key watcher to match the configured mode and key. */
+  private async syncHotkey(): Promise<void> {
+    const { mode, hotkey } = this.cfg.asr.mic;
+    const key = mode === 'always' || !this.host ? '' : `${mode}:${hotkey}`;
+    if (key === this.hotkeyKey) return;
+    this.hotkeyKey = key;
+    this.keyWatcher?.stop();
+    this.keyWatcher = null;
+    this.hotkeyProblem = null;
+    this.setTalking(false);
+    if (!key) return;
+    const codes = parseHotkey(hotkey);
+    const watch = this.opts.watchHotkey ?? watchHotkey;
+    const watcher = codes ? await watch(codes, (down) => this.onTalkKey(down), HOTKEY_POLL_MS) : `认不出按键「${hotkey}」`;
+    if (key !== this.hotkeyKey) { if (typeof watcher !== 'string') watcher.stop(); return; }
+    if (typeof watcher === 'string') {
+      this.hotkeyProblem = watcher;
+      this.log?.warn(`按键收音不可用,改为一直收音:${watcher}`);
+    } else this.keyWatcher = watcher;
+    this.segmenter.configure(this.segmentConfig());
+  }
+
+  private onTalkKey(down: boolean): void {
+    if (this.micMode() === 'hold') this.setTalking(down);
+    else if (down) this.setTalking(!this.talking);
+  }
+
+  private setTalking(on: boolean): void {
+    if (this.talking === on) return;
+    this.talking = on;
+    this.voiceFrame({ type: 'gate', open: on });
+    if (!this.cfg.asr.enabled || !this.micWanted()) return;
+    if (on) {
+      this.listenOpen = true;
+      this.server.sendPet({ t: 'listen', phase: 'start' });
+      return;
+    }
+    const tail = this.segmenter.flush();
+    if (tail) this.enqueue(tail);
+    this.wasSpeaking = false;
+    this.schedulePack();
+  }
+
+  private enqueue(u: Utterance): void {
+    this.counts.utterances++;
+    this.queue.push(u);
+    this.server.sendPet({ t: 'listen', phase: 'transcribing' });
+    void this.drain();
+  }
+
   private onAudio(frame: Int16Array): void {
     if (!this.cfg.asr.enabled || !this.micWanted()) return;
-    for (const u of this.segmenter.push(frame)) {
-      this.counts.utterances++;
-      this.queue.push(u);
-      this.server.sendPet({ t: 'listen', phase: 'transcribing' });
-      void this.drain();
-    }
-    const speaking = this.segmenter.active;
+    const open = this.gateOpen();
+    if (open) for (const u of this.segmenter.push(frame)) this.enqueue(u);
+    this.level = open ? this.segmenter.level : rmsDb(frame);
+    const speaking = open && this.segmenter.active;
     if (speaking && !this.wasSpeaking) this.server.sendPet({ t: 'listen', phase: 'start' });
     this.wasSpeaking = speaking;
     const now = Date.now();
     if (now - this.lastLevelAt >= 100) {
       this.lastLevelAt = now;
-      this.voiceFrame({ type: 'level', level: this.segmenter.level, speaking });
+      this.voiceFrame({ type: 'level', level: this.level, speaking, open });
     }
-    this.schedulePack();
+    if (open) this.schedulePack();
   }
 
   private async drain(): Promise<void> {
@@ -442,8 +625,8 @@ export class DesktopPetWorld implements World {
       return;
     }
     if (this.segmenter.active || this.transcribing || this.queue.length > 0) this.listenOpen = true;
-    else if (!hold && !this.packer.pending && this.listenOpen) {
-      // the episode ended with nothing worth delivering
+    else if (!hold && !this.packer.pending && this.listenOpen && !this.talking) {
+      // the episode ended with nothing worth delivering; an open talk key keeps it going
       this.listenOpen = false;
       this.partial = '';
       this.server.sendPet({ t: 'listen', phase: 'none' });
@@ -626,6 +809,11 @@ export class DesktopPetWorld implements World {
         case 'start': await this.startVoiceBackend(); return this.voiceState();
         case 'stop': await this.whisper?.stop(); this.syncPrefs(); return this.voiceState();
         case 'setEnabled': this.savePrefs({ mic: args[0] === true }); return this.voiceState();
+        case 'setMic': {
+          this.savePrefs({ micSettings: args[0] });
+          await this.syncHotkey();
+          return this.voiceState();
+        }
       }
     }
     throw new Error(`未知方法 ${panel}.${method}`);
@@ -665,7 +853,14 @@ export class DesktopPetWorld implements World {
       runtime: { ...this.store.whisper.state(), supported: this.store.whisper.supported || !!this.cfg.asr.serverFile },
       models,
       mic: this.micState,
-      level: this.segmenter.level,
+      input: {
+        ...this.cfg.asr.mic,
+        effectiveMode: this.micMode(),
+        hotkeyProblem: this.hotkeyProblem,
+        open: this.gateOpen(),
+        devices: this.devices,
+      },
+      level: this.level,
       thresholdDb: this.cfg.asr.segment.thresholdDb,
       recent: this.heard.slice(-20),
       counts: { ...this.counts },

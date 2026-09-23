@@ -49,6 +49,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "koffi": "^3.3.1",
     "opencc-js": "^1.4.1",
     "ws": "^8.18.0"
   },
