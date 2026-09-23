@@ -398,21 +398,29 @@ function openMenu(x, y) {
   menu.appendChild(document.createElement('hr'));
   add('装扮…', '', () => { closeMenu(); if (host?.openDress) host.openDress(); else window.open('/dress', '_blank'); });
   if (host?.hide) add('隐藏桌宠', '', () => { closeMenu(); host.hide(); });
+  if (prefs.bot?.controls && (prefs.bot.buttons?.settings ?? true)) {
+    add('打开设置', '', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
+  }
+  menu.style.width = '';
   menu.hidden = false;
+  // held at its opening width: the quit confirmation in the header must not widen the menu
+  menu.style.width = getComputedStyle(menu).width;
   // layout size: the opening animation scales the box, so its bounding rect is still shrunk here
   const w = menu.offsetWidth, h = menu.offsetHeight;
   menu.style.left = f(clamp(x, 8, innerWidth - w - 8)) + 'px';
   menu.style.top = f(clamp(y - h, 8, innerHeight - h - 8)) + 'px';
 }
-/** Avatar, name and the bot's run controls, when the World offers them. */
+/** Avatar, name and the bot's pause and quit controls, when the World offers them; settings is a row at the bottom. */
 function renderMenuHead(confirmQuit = false) {
   const head = menu.querySelector('.m-head'), bot = prefs.bot;
   if (!head || !bot) return;
+  head.classList.toggle('confirm', confirmQuit);
   head.innerHTML = '<span class="m-avatar"></span><span class="m-name"></span><span class="m-acts"></span>';
   head.querySelector('.m-avatar').innerHTML = bot.avatar
     ? `<img alt="" src="/api/avatar?v=${encodeURIComponent(bot.avatar)}">`
     : `<svg viewBox="18 18 220 220" aria-hidden="true">${mini('neutral', ctl.skin)}</svg>`;
-  head.querySelector('.m-name').textContent = confirmQuit ? bot.quitPrompt : bot.name;
+  const name = head.querySelector('.m-name');
+  name.textContent = name.title = confirmQuit ? bot.quitPrompt : bot.name;
   const acts = head.querySelector('.m-acts');
   const act = (iconHtml, label, fn, cls = 'm-act') => {
     const b = document.createElement('button');
@@ -430,7 +438,6 @@ function renderMenuHead(confirmQuit = false) {
   // only the controls the embedding app lent; a server without `buttons` lends all three
   const has = bot.buttons ?? { pause: true, settings: true, quit: true };
   if (has.pause) act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }));
-  if (has.settings) act(ICONS.settings, '设置', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
   if (has.quit) act(ICONS.power, bot.quitLabel, () => renderMenuHead(true));
 }
 function openSubmenu(item, choices, current, pick) {
