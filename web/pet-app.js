@@ -572,9 +572,11 @@ function layout() {
 /** Seconds between looks at the screen around the body. */
 const BACKDROP_EVERY = .8;
 /** OKLab distance under which a backdrop pixel counts as the body's color. */
-const SAME_COLOR = .2;
-/** Share of such pixels around the body that turns the halo on, and the share it turns off below. */
-const HALO_ON = .35, HALO_OFF = .2;
+const SAME_COLOR = .15;
+/** Share of such pixels around the body that turns the halo on (most of them), and the share it turns off below. */
+const HALO_ON = .6, HALO_OFF = .45;
+/** The halo's opacity when fully on. */
+const HALO_STRENGTH = .8;
 const petG = $('#pet'), haloFlood = $('#haloFlood');
 // a window host too old to sample the screen keeps the halo on; a browser tab draws its own wall
 const backdrop = { on: !!host && !host.sampleBackdrop, fixed: !!host && !host.sampleBackdrop, k: 0, busy: false, next: 0 };
@@ -610,7 +612,7 @@ async function probeBackdrop() {
   const ink = inkRgb();
   if (!ink) return;
   const body = bodyRect(), S = ctl.bounds.S;
-  const near = inflate(body, 12 + 60 * S), far = inflate(near, 40);
+  const near = inflate(body, 4 + 34 * S), far = inflate(near, 8 + 40 * S);
   const x = Math.max(0, far.x), y = Math.max(0, far.y);
   const rect = { x, y, width: Math.min(innerWidth, far.x + far.width) - x, height: Math.min(innerHeight, far.y + far.height) - y };
   const skip = [near, ...[bubble, heardEl, menu, tools].filter((el) => !el.hidden).map(rectOf)];
@@ -636,7 +638,7 @@ function stepBackdrop(dt) {
   }
   const k = backdrop.k + ((backdrop.on ? 1 : 0) - backdrop.k) * Math.min(1, dt * 6);
   backdrop.k = k < .005 ? 0 : k;
-  if (backdrop.k) { haloFlood.setAttribute('flood-opacity', f(backdrop.k)); petG.setAttribute('filter', 'url(#halo)'); }
+  if (backdrop.k) { haloFlood.setAttribute('flood-opacity', (backdrop.k * HALO_STRENGTH).toFixed(2)); petG.setAttribute('filter', 'url(#halo)'); }
   else petG.removeAttribute('filter');
 }
 

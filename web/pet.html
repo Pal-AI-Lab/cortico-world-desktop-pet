@@ -13,11 +13,11 @@
     <defs>
       <!-- a soft light gray glow behind the body, for backdrops of the body's own color -->
       <filter id="halo" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
-        <feMorphology in="SourceAlpha" operator="dilate" radius="8" result="grown"/>
-        <feGaussianBlur in="grown" stdDeviation="16" result="soft"/>
+        <feMorphology in="SourceAlpha" operator="dilate" radius="5" result="grown"/>
+        <feGaussianBlur in="grown" stdDeviation="10" result="soft"/>
         <feFlood id="haloFlood" flood-color="#B8B8B8" flood-opacity="0"/>
         <feComposite in2="soft" operator="in" result="glow"/>
-        <feMerge><feMergeNode in="glow"/><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+        <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
       </filter>
     </defs>
     <ellipse id="shadow" class="shadow" cx="0" cy="0" rx="0" ry="0"/>
