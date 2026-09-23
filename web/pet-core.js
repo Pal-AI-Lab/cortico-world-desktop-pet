@@ -18,7 +18,10 @@ const smooth = k => k * k * (3 - 2 * k);
 /* ---------- figure geometry ---------- */
 const HIPS = [[104, 212], [150, 212]];
 const EYES = [[113, 117], [163, 117]];
-export const STAND = HIPS.map(h => [h[0], h[1], h[0], 246]);
+const BODY_W = 36, LEG_W = 30;
+// a foot's round cap touches the ground
+const FOOT_Y = 256 - LEG_W / 2;
+export const STAND = HIPS.map(h => [h[0], h[1], h[0], FOOT_Y]);
 const DROP = 'M0 -9C4 -3 6 0 6 3.5A6 6 0 0 1 -6 3.5C-6 0 -4 -3 0 -9Z';
 const pol = (a, r) => [128 + r * Math.cos(a * Math.PI / 180), 128 - r * Math.sin(a * Math.PI / 180)];
 const pt = p => `${f(p[0])} ${f(p[1])}`;
@@ -150,7 +153,7 @@ function sideBack(id, sw) {
 function sideFront(id, sw) {
   switch (id) {
     case 'headphones':
-      return `<path ${stroke('c-side-main', 16)} d="M${pt(pol(150, 110))}A110 110 0 0 1 ${pt(pol(76, 110))}"/>` +
+      return `<path ${stroke('c-side-main', 16)} d="M${pt(pol(150, 113))}A113 113 0 0 1 ${pt(pol(76, 113))}"/>` +
         `<rect class="f-side-acc" transform="${mount(166, 98)}" x="-24" y="-17" width="48" height="34" rx="17"/>`;
     case 'earring':
       return `<g transform="translate(${pt(pol(172, 99))}) rotate(${f(sw * .8)})"><circle class="f-side-main" cx="0" cy="13" r="10"/></g>`;
@@ -224,12 +227,12 @@ export const GALLERY = ['neutral', 'happy', 'wink', 'love', 'shy', 'surprised', 
 /** One frame of the figure as SVG markup, in logo units. */
 export function figure(fc, o) {
   const t = o.t, lx = o.look[0], ly = o.look[1], acc = o.acc, sw = o.swing || 0;
-  let s = '<g class="ink" fill="none" stroke-width="20" stroke-linecap="round">';
+  let s = `<g class="ink" fill="none" stroke-width="${LEG_W}" stroke-linecap="round">`;
   for (const l of o.legs) s += `<path d="M${f(l[0])} ${f(l[1])}L${f(l[2])} ${f(l[3])}"/>`;
   s += `</g><g transform="translate(0 ${f(o.low)})">`;
   s += sideBack(acc.side, sw);
   s += headBack(acc.head, sw);
-  s += `<path class="ink" fill="none" stroke-width="30" stroke-linecap="round" d="${cPath(fc.gap[0], fc.gap[1])}"/>`;
+  s += `<path class="ink" fill="none" stroke-width="${BODY_W}" stroke-linecap="round" d="${cPath(fc.gap[0], fc.gap[1])}"/>`;
   s += neckD(acc.neck, sw);
   if (fc.blush > .02) {
     s += `<g class="blush" opacity="${f(fc.blush * .8)}"><ellipse cx="${f(99 + lx)}" cy="146" rx="11" ry="5.5"/><ellipse cx="${f(167 + lx)}" cy="146" rx="11" ry="5.5"/></g>`;
@@ -240,7 +243,7 @@ export function figure(fc, o) {
     if ((ee.shape === 'ring' || ee.shape === 'lid') && o.blink) ee.ry *= (1 - o.blink);
     const cx = EYES[i][0] + lx, cy = EYES[i][1] + ly;
     const tr = close > .01 ? ` transform="translate(0 ${f(cy)}) scale(1 ${f(Math.max(.08, 1 - close) * 100) / 100}) translate(0 ${f(-cy)})"` : '';
-    s += `<path class="eye" fill="none" stroke-width="${e.sw || 11}" stroke-linecap="round" stroke-linejoin="round"${tr} d="${eyePath(ee, cx, cy)}"/>`;
+    s += `<path class="eye" fill="none" stroke-width="${e.sw || 12}" stroke-linecap="round" stroke-linejoin="round"${tr} d="${eyePath(ee, cx, cy)}"/>`;
   });
   s += glassesD(acc.glasses, lx * .4, ly * .3);
   if (fc.brows) {
@@ -248,7 +251,7 @@ export function figure(fc, o) {
     const d = fc.brows === 'angry'
       ? `M${f(98 + bx)} ${f(88 + by)}L${f(124 + bx)} ${f(97 + by)}M${f(152 + bx)} ${f(97 + by)}L${f(178 + bx)} ${f(88 + by)}`
       : `M${f(98 + bx)} ${f(96 + by)}L${f(123 + bx)} ${f(88 + by)}M${f(153 + bx)} ${f(88 + by)}L${f(178 + bx)} ${f(96 + by)}`;
-    s += `<path class="ink" fill="none" stroke-width="7" stroke-linecap="round" d="${d}"/>`;
+    s += `<path class="ink" fill="none" stroke-width="9" stroke-linecap="round" d="${d}"/>`;
   }
   s += sideFront(acc.side, sw);
   s += headFront(acc.head, sw, t);
@@ -823,8 +826,8 @@ export function createPet(els, opts) {
       else if (m === 'air') { tx = hx + (i ? 9 : -9); ty = hy + 33; }
       else {
         const ph = pet.phase + i * Math.PI;
-        const sx = hx + pet.stride * Math.sin(ph), sy = 246 - pet.lift * Math.max(0, Math.cos(ph));
-        tx = lerp(sx, hx + 26, pet.sitK); ty = lerp(sy, 246, pet.sitK);
+        const sx = hx + pet.stride * Math.sin(ph), sy = FOOT_Y - pet.lift * Math.max(0, Math.cos(ph));
+        tx = lerp(sx, hx + 26, pet.sitK); ty = lerp(sy, FOOT_Y, pet.sitK);
       }
       const r = m === 'drag' || m === 'air' ? 14 : 40;
       ft[0] = lerp(ft[0], tx, ease(r, dt)); ft[1] = lerp(ft[1], ty, ease(r, dt));
