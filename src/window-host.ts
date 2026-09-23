@@ -107,8 +107,9 @@ export class WindowHost {
     const exited = new Promise<void>((r) => child.once('exit', () => r()));
     child.kill();
     await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
-    if (child.exitCode === null && process.platform === 'win32' && child.pid) {
-      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+    if (child.exitCode === null && child.pid) {
+      if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      else child.kill('SIGKILL');
     }
   }
 }

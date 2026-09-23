@@ -11,7 +11,7 @@
 [CortiCompanion](https://github.com/Pal-AI-Lab/CortiCompanion) 桌面上的 Coo 就是它。
 
 bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两条短腿。它用气泡说话、用选项提问、
-沿任务栏走动、做表情和动作;人可以对它说话(FunASR 在本机识别,Windows 上也可用系统自带的识别)、打字、点选项、戳它、摸它、
+沿屏幕底边走动、做表情和动作;人可以对它说话(FunASR 在本机识别,Windows 上也可用系统自带的识别)、打字、点选项、戳它、摸它、
 把它拎起来甩出去,这些都作为事件送回 bot。
 
 ## 工具
@@ -106,8 +106,8 @@ SenseVoice 一次识别整句;说话过程中每 0.5 秒把这句到目前为止
 | `toggle` | 按一下说话键开始,再按一下停;中间按停顿切句 |
 | `always` | 一直收音,按停顿切句 |
 
-说话键 `asr.mic.hotkey` 默认 `RightCtrl`,用 `+` 连写组合键(`Ctrl+Space`、`F8`、`Mouse4`),在哪个窗口里按都算。
-它经 koffi 轮询 Win32 `GetAsyncKeyState` 读取,只在 Windows 上可用;读不到时退回 `always`,面板上写明原因。
+说话键 `asr.mic.hotkey` 默认 `RightCtrl`(Mac 上默认 `RightAlt`,即右 Option),用 `+` 连写组合键(`Ctrl+Space`、`F8`、`Mouse4`),在哪个窗口里按都算。
+Windows 上经 koffi 轮询 Win32 `GetAsyncKeyState` 读取;macOS 上轮询 CoreGraphics 的 `CGEventSourceKeyState`,要在「系统设置 → 隐私与安全性 → 输入监控」里允许,第一次会弹出询问。读不到时退回 `always`,面板上写明原因。
 `asr.mic.deviceId` 选麦克风,留空用系统默认;设备列表由桌宠页在拿到麦克风权限后报上来。
 麦克风在「开启语音输入」总开关开着时一直打开,电平条随时显示音量,说话键只决定哪一段送去识别。
 

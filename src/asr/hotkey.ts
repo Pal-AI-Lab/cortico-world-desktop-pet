@@ -1,10 +1,13 @@
 /**
- * The talk key: a hotkey held or pressed anywhere on the desktop, read by polling
- * GetAsyncKeyState through koffi. Windows only; elsewhere, or when koffi does not load,
- * `watchHotkey` returns the reason instead of a watcher.
+ * The talk key: a hotkey held or pressed anywhere on the desktop, read by polling through koffi:
+ * GetAsyncKeyState on Windows, CGEventSourceKeyState / CGEventSourceButtonState on macOS. macOS
+ * reads the keyboard only for an app the person allowed under Privacy & Security → Input
+ * Monitoring; the first watch asks for it, and until it is given `watchHotkey` returns why.
+ * Elsewhere, or when koffi does not load, `watchHotkey` returns the reason instead of a watcher.
  *
  * A hotkey is key names joined by `+` (`RightCtrl`, `Ctrl+Space`, `F8`, `Mouse4`); it is down
- * while every named key is down.
+ * while every named key is down. The names are Windows' (`Alt` is Option and `Win` is Command
+ * on a Mac); `parseHotkey` gives Windows virtual-key codes, which the macOS reader maps to its own.
  */
 
 const NAMED: Record<string, number> = {
@@ -17,6 +20,9 @@ const NAMED: Record<string, number> = {
   Pause: 0x13, ScrollLock: 0x91,
   Mouse3: 0x04, Mouse4: 0x05, Mouse5: 0x06,
 };
+
+/** The talk key a new setup gets: right Ctrl, or right Option on a Mac, whose laptops have no right Ctrl. */
+export const DEFAULT_HOTKEY = process.platform === 'darwin' ? 'RightAlt' : 'RightCtrl';
 
 /** Virtual-key codes of `hotkey`, or null when a name is unknown. */
 export function parseHotkey(hotkey: string): number[] | null {
@@ -38,30 +44,90 @@ const LABELS: Record<string, string> = {
   LeftCtrl: '左 Ctrl', RightCtrl: '右 Ctrl', LeftAlt: '左 Alt', RightAlt: '右 Alt', LeftShift: '左 Shift', RightShift: '右 Shift',
   RightWin: '右 Win', Backquote: '`', Mouse3: '鼠标中键', Mouse4: '鼠标侧键 4', Mouse5: '鼠标侧键 5',
 };
+const MAC_LABELS: Record<string, string> = {
+  ...LABELS,
+  Ctrl: 'Control', LeftCtrl: '左 Control', RightCtrl: '右 Control',
+  Alt: 'Option', LeftAlt: '左 Option', RightAlt: '右 Option', Win: 'Command', RightWin: '右 Command',
+};
 
-/** How the console names `hotkey` to a person. */
-export function hotkeyLabel(hotkey: string): string {
-  return hotkey.split('+').map((k) => LABELS[k] ?? k).join(' + ');
+/** How the console names `hotkey` to a person, in the words of the platform's keyboard. */
+export function hotkeyLabel(hotkey: string, platform: NodeJS.Platform = process.platform): string {
+  const labels = platform === 'darwin' ? MAC_LABELS : LABELS;
+  return hotkey.split('+').map((k) => labels[k] ?? k).join(' + ');
 }
+
+/**
+ * macOS key codes (kVK_*) for the Windows virtual-key codes `parseHotkey` gives; a code listed
+ * with several keys is down when any of them is. Mouse buttons are CGMouseButton numbers, apart.
+ */
+const MAC_KEYS: Record<number, number[]> = {
+  0x11: [0x3b, 0x3e], 0xa2: [0x3b], 0xa3: [0x3e],
+  0x12: [0x3a, 0x3d], 0xa4: [0x3a], 0xa5: [0x3d],
+  0x10: [0x38, 0x3c], 0xa0: [0x38], 0xa1: [0x3c],
+  0x5b: [0x37, 0x36], 0x5c: [0x36],
+  0x20: [0x31], 0x09: [0x30], 0x14: [0x39], 0xc0: [0x32], 0x0d: [0x24],
+  0x2d: [0x72], 0x2e: [0x75], 0x24: [0x73], 0x23: [0x77], 0x21: [0x74], 0x22: [0x79],
+  // A–Z and 0–9 where the ANSI layout places them
+  0x41: [0x00], 0x42: [0x0b], 0x43: [0x08], 0x44: [0x02], 0x45: [0x0e], 0x46: [0x03], 0x47: [0x05], 0x48: [0x04], 0x49: [0x22],
+  0x4a: [0x26], 0x4b: [0x28], 0x4c: [0x25], 0x4d: [0x2e], 0x4e: [0x2d], 0x4f: [0x1f], 0x50: [0x23], 0x51: [0x0c], 0x52: [0x0f],
+  0x53: [0x01], 0x54: [0x11], 0x55: [0x20], 0x56: [0x09], 0x57: [0x0d], 0x58: [0x07], 0x59: [0x10], 0x5a: [0x06],
+  0x30: [0x1d], 0x31: [0x12], 0x32: [0x13], 0x33: [0x14], 0x34: [0x15], 0x35: [0x17], 0x36: [0x16], 0x37: [0x1a], 0x38: [0x1c], 0x39: [0x19],
+  // F1–F20
+  0x70: [0x7a], 0x71: [0x78], 0x72: [0x63], 0x73: [0x76], 0x74: [0x60], 0x75: [0x61], 0x76: [0x62], 0x77: [0x64], 0x78: [0x65],
+  0x79: [0x6d], 0x7a: [0x67], 0x7b: [0x6f], 0x7c: [0x69], 0x7d: [0x6b], 0x7e: [0x71], 0x7f: [0x6a], 0x80: [0x40], 0x81: [0x4f],
+  0x82: [0x50], 0x83: [0x5a],
+};
+const MAC_BUTTONS: Record<number, number> = { 0x04: 2, 0x05: 3, 0x06: 4 };
+
+/** The Windows virtual-key codes a Mac can read; the rest have no Mac key. */
+export const macReadable = (vk: number): boolean => MAC_KEYS[vk] !== undefined || MAC_BUTTONS[vk] !== undefined;
 
 export interface KeyWatcher {
   stop(): void;
 }
 
-/** Calls `onChange` on every press and release of the hotkey whose codes are `keys`. */
-export async function watchHotkey(keys: number[], onChange: (down: boolean) => void, pollMs: number): Promise<KeyWatcher | string> {
-  if (process.platform !== 'win32') return '按键收音只在 Windows 上可用';
-  let getKey: (vk: number) => number;
+/** Whether one Windows virtual-key code is down right now. */
+type KeyReader = (vk: number) => boolean;
+
+async function windowsReader(): Promise<KeyReader | string> {
   try {
     const koffi = (await import('koffi')).default;
-    getKey = koffi.load('user32.dll').func('short __stdcall GetAsyncKeyState(int vKey)') as (vk: number) => number;
+    const getKey = koffi.load('user32.dll').func('short __stdcall GetAsyncKeyState(int vKey)') as (vk: number) => number;
+    // the high bit is set while the key is down
+    return (vk) => (getKey(vk) & 0x8000) !== 0;
   } catch (err) {
     return `读不了键盘状态:${(err as Error).message}`;
   }
+}
+
+async function macReader(keys: number[]): Promise<KeyReader | string> {
+  if (!keys.every(macReadable)) return 'Mac 上没有这个按键,换一个说话键';
+  try {
+    const koffi = (await import('koffi')).default;
+    const cg = koffi.load('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    const preflight = cg.func('bool CGPreflightListenEventAccess()') as () => boolean;
+    const request = cg.func('bool CGRequestListenEventAccess()') as () => boolean;
+    // asks once; the answer takes effect after the app restarts
+    if (!preflight() && !request()) return '没有「输入监控」权限:在「系统设置 → 隐私与安全性 → 输入监控」里打开 CortiCompanion,再重启它';
+    const keyState = cg.func('bool CGEventSourceKeyState(int32_t state, uint16_t key)') as (state: number, key: number) => boolean;
+    const buttonState = cg.func('bool CGEventSourceButtonState(int32_t state, uint32_t button)') as (state: number, button: number) => boolean;
+    // kCGEventSourceStateHIDSystemState: the hardware, whichever app has the keyboard
+    const HID = 1;
+    return (vk) => (MAC_BUTTONS[vk] !== undefined ? buttonState(HID, MAC_BUTTONS[vk]!) : (MAC_KEYS[vk] ?? []).some((k) => keyState(HID, k)));
+  } catch (err) {
+    return `读不了键盘状态:${(err as Error).message}`;
+  }
+}
+
+/** Calls `onChange` on every press and release of the hotkey whose codes are `keys`. */
+export async function watchHotkey(keys: number[], onChange: (down: boolean) => void, pollMs: number): Promise<KeyWatcher | string> {
+  const reader = process.platform === 'win32' ? await windowsReader()
+    : process.platform === 'darwin' ? await macReader(keys)
+    : '按键收音只在 Windows 和 macOS 上可用';
+  if (typeof reader === 'string') return reader;
   let down = false;
   const timer = setInterval(() => {
-    // the high bit is set while the key is down
-    const now = keys.every((vk) => (getKey(vk) & 0x8000) !== 0);
+    const now = keys.every((vk) => reader(vk));
     if (now === down) return;
     down = now;
     onChange(now);

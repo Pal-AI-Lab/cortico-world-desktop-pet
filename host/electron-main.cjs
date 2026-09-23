@@ -7,8 +7,13 @@
  * display's work area, is transparent and always on top, and ignores the mouse until the
  * page reports the pointer is over the figure, a bubble or the menu. A tray icon shows,
  * hides and closes it; an embedding app that has its own tray passes `tray: false`.
+ *
+ * On macOS the window shows on every Space and over full-screen apps, the process keeps out of
+ * the Dock, and the microphone is asked for before the page opens it (the app's Info.plist
+ * carries the reason macOS shows). The keyboard is not taken for a question's number keys there:
+ * macOS gives no way to hand it back to the app that had it.
  */
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, session, shell, systemPreferences } = require('electron');
 const { join } = require('node:path');
 
 /** Milliseconds between the cursor reports the page gets. */
@@ -133,8 +138,12 @@ function sampleBackdrop({ rect, skip = [] }) {
   return out;
 }
 
-/** 32×32 tray icon drawn in code: the C outline and two ring eyes, white on the brand green. */
+/**
+ * 32×32 tray icon drawn in code: the C outline and two ring eyes, white on the brand green; on
+ * macOS a black template image the menu bar tints to its own color.
+ */
 function trayIcon() {
+  const mac = process.platform === 'darwin';
   const n = 32, buf = Buffer.alloc(n * n * 4);
   const ring = (px, py, cx, cy, r, w) => Math.abs(Math.hypot(px - cx, py - cy) - r) <= w / 2;
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
@@ -145,9 +154,12 @@ function trayIcon() {
     const eye = ring(px, py, 14.1, 14.6, 2.2, 1.5) || ring(px, py, 20.4, 14.6, 2.2, 1.5);
     const white = c || eye;
     // BGRA
+    if (mac) { buf[i] = buf[i + 1] = buf[i + 2] = 0; buf[i + 3] = white ? 255 : 0; continue; }
     buf[i] = white ? 255 : 0x70; buf[i + 1] = white ? 255 : 0xA8; buf[i + 2] = white ? 255 : 0x00; buf[i + 3] = inside ? 255 : 0;
   }
-  return nativeImage.createFromBitmap(buf, { width: n, height: n });
+  const img = nativeImage.createFromBitmap(buf, { width: n, height: n, scaleFactor: mac ? 2 : 1 });
+  if (mac) img.setTemplateImage(true);
+  return img;
 }
 
 function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
@@ -175,6 +187,8 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
       },
     });
     win.setAlwaysOnTop(true, 'screen-saver');
+    // on every Space, and over an app in full screen
+    if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     win.setIgnoreMouseEvents(true, { forward: true });
     win.webContents.setWindowOpenHandler(({ url: target }) => {
       if (target.startsWith(origin)) { openDress(target); return { action: 'deny' }; }
@@ -213,7 +227,7 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
   /** The window that had the keyboard before a question took it; it gets it back afterwards. */
   let lent = 0n;
   ipcMain.on('pet:grabFocus', () => {
-    if (!win || !win.isVisible()) return;
+    if (!win || !win.isVisible() || process.platform === 'darwin') return;
     if (foreground) {
       const own = hwndOf(win), cur = foreground.current();
       if (cur !== own && foreground.give(own)) lent = cur;
@@ -234,7 +248,13 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
     try { return sampleBackdrop(query || {}); } catch { return []; }
   });
 
-  app.whenReady().then(() => {
+  // a pet is not an app to switch to
+  if (process.platform === 'darwin') app.dock?.hide();
+  app.whenReady().then(async () => {
+    // macOS asks once, before the page first opens the microphone
+    if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+      await systemPreferences.askForMediaAccess('microphone').catch(() => false);
+    }
     session.defaultSession.setPermissionRequestHandler((wc, permission, done) => {
       done(permission === 'media' && wc.getURL().startsWith(origin));
     });
