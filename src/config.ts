@@ -5,6 +5,21 @@ import type { SegmentConfig } from './asr/segmenter.ts';
 
 export const DESKTOP_PET_ID = 'desktop-pet';
 
+/** What the pet's menu offers, in its order; any of them can also show as a button beside the pet on hover. */
+export const PET_ACTIONS = ['chat', 'voice', 'roam', 'theme', 'sound', 'dress', 'hide'] as const;
+export type PetAction = typeof PET_ACTIONS[number];
+/** Most hover buttons. */
+export const MAX_HOVER_BUTTONS = 6;
+
+/** The hover buttons a config value names: known actions, each once, at most MAX_HOVER_BUTTONS. */
+export function hoverButtonList(value: string): PetAction[] {
+  const out: PetAction[] = [];
+  for (const id of value.split(',').map((s) => s.trim())) {
+    if ((PET_ACTIONS as readonly string[]).includes(id) && !out.includes(id as PetAction)) out.push(id as PetAction);
+  }
+  return out.slice(0, MAX_HOVER_BUTTONS);
+}
+
 /** Accessory choice as the page's `normalizeSkin` reads it; unknown values fall back to defaults there. */
 export interface PetSkin {
   palette: string;
@@ -41,6 +56,8 @@ export interface DesktopPetConfigSection extends WorldSection {
   roam: RoamMode;
   sound: boolean;
   theme: PetTheme;
+  /** Actions shown as buttons beside the pet on hover, ids from PET_ACTIONS joined by commas. */
+  hoverButtons: string;
   skin: PetSkin;
   touch: {
     /** Clicks, petting and throws become events. */
@@ -83,6 +100,7 @@ export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
   roam: 'calm',
   sound: true,
   theme: 'dark',
+  hoverButtons: 'chat,voice',
   skin: {
     palette: 'mint', head: 'none', side: 'none', glasses: 'none', neck: 'none',
     colors: { head: { main: 'body', acc: 'eye' }, side: { main: 'eye', acc: 'eye' }, glasses: { main: 'body', acc: 'eye' }, neck: { main: 'eye', acc: 'eye' } },
@@ -118,6 +136,7 @@ export const DESKTOP_PET_CONFIG_GROUP: ConfigGroup = {
       [`${K}.roam`]: { type: 'string', title: '行为模式', enum: ['free', 'calm', 'off'], description: 'free 常走动;calm 多待着;off 只做被要求的动作。', 'x-hot': true },
       [`${K}.sound`]: { type: 'boolean', title: '音效', 'x-hot': true },
       [`${K}.theme`]: { type: 'string', title: '黑白模式', enum: ['dark', 'light'], description: 'dark 夜间:浅色身体、深色气泡;light 白天:深色身体、浅色气泡。', 'x-hot': true },
+      [`${K}.hoverButtons`]: { type: 'string', title: '悬停按钮', description: `鼠标停在桌宠身上时旁边出现的按钮,最多 ${MAX_HOVER_BUTTONS} 个,逗号分隔:${PET_ACTIONS.join(', ')}。`, 'x-hot': true },
       [`${K}.window.enabled`]: { type: 'boolean', title: '启动时打开桌宠窗口', 'x-hot': false },
       [`${K}.window.scale`]: { type: 'number', title: '大小', minimum: .5, maximum: 2, multipleOf: .05, 'x-hot': true },
       [`${K}.window.electronFile`]: { type: 'string', title: 'Electron 程序', description: '留空时依次用 CORTICO_DESKTOP_PET_HOST 和面板里安装的运行时。', 'x-path': { kind: 'file' }, 'x-hot': false },

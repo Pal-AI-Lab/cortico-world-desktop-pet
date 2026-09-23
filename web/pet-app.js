@@ -16,14 +16,16 @@ document.body.classList.add(host ? 'desk' : 'tab');
 
 const stage = $('#stage');
 const bubble = $('#bubble'), heardEl = $('#heard'), trail = $('#trail'), menu = $('#menu');
-const tools = $('#tools'), toolChat = $('#toolChat'), toolMic = $('#toolMic');
+const tools = $('#tools');
 const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
 
 const prefs = {
   roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false, micDevice: '', bot: null,
-  /** Voice input: switched on, recognizer ready, why not, how to talk. */
-  voice: { enabled: false, ready: false, detail: null, hint: '' },
+  /** Voice input: switched on, recognizer ready, why not, how to talk, and the mode in force. */
+  voice: { enabled: false, ready: false, detail: null, hint: '', mode: 'hold' },
+  /** The actions shown as buttons beside the pet on hover. */
+  hoverButtons: ['chat', 'voice'],
 };
 const sfx = createSfx();
 if (host) sfx.unlock();
@@ -70,9 +72,11 @@ function applyPrefs(p) {
   if (typeof p.user === 'string') prefs.user = p.user;
   if (typeof p.micDevice === 'string' && p.micDevice !== prefs.micDevice) { prefs.micDevice = p.micDevice; stopMic(); }
   if (typeof p.mic === 'boolean') { prefs.mic = p.mic; p.mic && !watching ? startMic() : stopMic(); }
-  if (p.voice && typeof p.voice === 'object') { prefs.voice = { ...prefs.voice, ...p.voice }; renderMic(); }
-  if (p.bot) { prefs.bot = p.bot; if (!menu.hidden) renderMenuHead(); }
+  if (p.voice && typeof p.voice === 'object') prefs.voice = { ...prefs.voice, ...p.voice };
+  if (Array.isArray(p.hoverButtons)) prefs.hoverButtons = p.hoverButtons.filter((id) => typeof id === 'string' && id in ACTIONS);
+  if (p.bot) { prefs.bot = p.bot; if (!menu.hidden && !menu.querySelector('.m-head.confirm')) renderMenuHead(); }
   if (typeof p.thinking === 'boolean') ctl.setThinking(p.thinking);
+  refreshButtons();
 }
 
 function onOrder(m) {
@@ -392,49 +396,134 @@ function stopMic() {
   send({ t: 'mic', state: 'off' });
 }
 
-/* ---------- menu ---------- */
-const ROAM = { free: '常走动', calm: '多待着', off: '不乱动' };
+/* ---------- actions: the menu's lower zone and the hover buttons draw from one list ---------- */
+const ROAM_ORDER = ['off', 'calm', 'free'];
+const ROAM = { off: '不乱动', calm: '多待着', free: '常走动' };
+const ROAM_LEVEL = { off: '低', calm: '中', free: '高' };
+/** The voice button's badge: listening all the time, or only on the talk key. */
+const MIC_BADGE = { always: 'auto', hold: 'key', toggle: 'key' };
+/** Most hover buttons shown beside the pet. */
+const MAX_HOVER = 6;
+
+/**
+ * Every button the menu and the hover buttons can show, in the menu's order. `icon`, `state` and
+ * `on` read the current prefs: `state` is the line that says what the button does and where it
+ * stands, `on` lights a switch that is on (undefined for plain actions). `keep` leaves the menu
+ * open after a click, so a switch shows its new state there.
+ */
+const ACTIONS = {
+  chat: {
+    icon: () => ICONS.chat,
+    state: () => '打字和我说话(也可以双击我)',
+    run: () => openInput(),
+  },
+  voice: {
+    keep: true,
+    icon: () => (prefs.voice.enabled ? ICONS.mic : ICONS.micOff),
+    badge: () => (prefs.voice.enabled ? MIC_BADGE[prefs.voice.mode] ?? '' : ''),
+    on: () => prefs.voice.enabled,
+    state: () => (!prefs.voice.enabled ? '语音输入:关 · 点一下打开'
+      : !prefs.voice.ready ? `语音输入:开,但${prefs.voice.detail || '识别服务没有就绪'} · 点一下关掉`
+      : `语音输入:开(${prefs.voice.mode === 'always' ? '自动收音' : '按键收音'})· ${prefs.voice.hint || ''}`),
+    run: () => toggleVoice(),
+  },
+  roam: {
+    keep: true,
+    icon: () => ICONS[`roam_${prefs.roam}`] ?? ICONS.roam_calm,
+    state: () => {
+      const next = ROAM_ORDER[(ROAM_ORDER.indexOf(prefs.roam) + 1) % ROAM_ORDER.length];
+      return `行为模式:${ROAM_LEVEL[prefs.roam] ?? ''} · ${ROAM[prefs.roam] ?? ''} · 点一下换成「${ROAM[next]}」`;
+    },
+    run: () => cycleRoam(),
+  },
+  theme: {
+    keep: true,
+    icon: () => (prefs.theme === 'dark' ? ICONS.moon : ICONS.sun),
+    on: () => prefs.theme === 'dark',
+    state: () => (prefs.theme === 'dark' ? '夜间模式:开(浅色身体)· 点一下换白天' : '夜间模式:关(白天,深色身体)· 点一下换夜间'),
+    run: () => toggleTheme(),
+  },
+  sound: {
+    keep: true,
+    icon: () => (prefs.sound ? ICONS.sound : ICONS.soundOff),
+    on: () => prefs.sound,
+    state: () => (prefs.sound ? '音效:开 · 点一下静音' : '音效:关 · 点一下打开'),
+    run: () => send({ t: 'prefs', sound: !prefs.sound }),
+  },
+  dress: {
+    icon: () => ICONS.shirt, cls: 'dress',
+    state: () => '换配色、帽子、耳饰、眼镜、颈饰',
+    // an embedding app that lends dressing shows its own dress page; otherwise the pet's dress window
+    run: () => {
+      if (prefs.bot?.buttons?.dress) send({ t: 'control', action: 'dress' });
+      else if (host?.openDress) host.openDress();
+      else window.open('/dress', '_blank');
+    },
+  },
+  hide: {
+    icon: () => ICONS.eyeOff, available: () => !!host?.hide,
+    state: () => '先把我藏起来(托盘里可以叫我回来)',
+    run: () => host.hide(),
+  },
+};
+const available = (id) => ACTIONS[id] && (ACTIONS[id].available?.() ?? true);
+
+/** One action as a button: its icon, the badge, and whether a switch is on. */
+function drawAction(b, id) {
+  const a = ACTIONS[id], on = a.on?.();
+  const badge = a.badge?.() ?? '';
+  b.querySelector('.ic').innerHTML = a.icon() + (badge ? `<b class="badge">${badge}</b>` : '');
+  b.classList.toggle('on', on === true);
+  b.classList.toggle('off', on === false);
+  b.title = a.state();
+  b.setAttribute('aria-label', b.title);
+  if (on !== undefined) b.setAttribute('aria-pressed', String(on));
+}
+
+function cycleRoam() {
+  const roam = ROAM_ORDER[(ROAM_ORDER.indexOf(prefs.roam) + 1) % ROAM_ORDER.length];
+  applyPrefs({ roam });
+  send({ t: 'prefs', roam });
+}
+
+function toggleTheme() {
+  const theme = prefs.theme === 'dark' ? 'light' : 'dark';
+  applyPrefs({ theme });
+  send({ t: 'prefs', theme });
+}
+
+function toggleVoice() {
+  const on = !prefs.voice.enabled;
+  // shown at once; the World's next prefs confirm it
+  prefs.voice = { ...prefs.voice, enabled: on };
+  refreshButtons();
+  send({ t: 'prefs', mic: on });
+}
+
+/* ---------- menu: the bot and its run controls on top, the actions below; every entry is a round icon button ---------- */
 function openMenu(x, y) {
   menu.innerHTML = '';
-  if (prefs.bot) {
-    menu.appendChild(Object.assign(document.createElement('div'), { className: 'm-head' }));
-    renderMenuHead();
-    menu.appendChild(document.createElement('hr'));
-  }
-  const add = (label, val, fn) => {
+  menu.appendChild(Object.assign(document.createElement('div'), { className: 'm-head' }));
+  renderMenuHead();
+  const grid = Object.assign(document.createElement('div'), { className: 'm-grid' });
+  for (const id of Object.keys(ACTIONS)) {
+    if (!available(id)) continue;
+    const a = ACTIONS[id];
     const b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem');
-    b.innerHTML = `<span></span><span class="val"></span>`;
-    b.firstChild.textContent = label; b.lastChild.textContent = val || '';
-    b.addEventListener('click', () => { sfx.tick(); fn(); });
-    // pointing at another item folds an open submenu
-    b.addEventListener('pointerenter', () => { if (!b.classList.contains('has-sub')) closeSubmenu(); });
-    menu.appendChild(b);
-    return b;
-  };
-  /** An item that unfolds its choices beside the menu, the current one checked. */
-  const choose = (label, choices, current, pick) => {
-    const b = add(label, choices[current], () => openSubmenu(b, choices, current, pick));
-    b.classList.add('has-sub');
-    b.setAttribute('aria-haspopup', 'menu');
-    b.addEventListener('pointerenter', () => openSubmenu(b, choices, current, pick));
-  };
-  add('语音输入', prefs.voice.enabled ? '开' : '关', () => { toggleVoice(); closeMenu(); });
-  choose('行为模式', ROAM, prefs.roam, (roam) => send({ t: 'prefs', roam }));
-  add('黑白模式', prefs.theme === 'dark' ? '夜间' : '白天', () => { toggleTheme(); closeMenu(); });
-  add('音效', prefs.sound ? '开' : '关', () => { send({ t: 'prefs', sound: !prefs.sound }); closeMenu(); });
-  menu.appendChild(document.createElement('hr'));
-  // an embedding app that lends dressing shows its own dress page; otherwise the pet's dress window
-  add('装扮…', '', () => {
-    closeMenu();
-    if (prefs.bot?.buttons?.dress) send({ t: 'control', action: 'dress' });
-    else if (host?.openDress) host.openDress();
-    else window.open('/dress', '_blank');
-  });
-  if (host?.hide) add('隐藏桌宠', '', () => { closeMenu(); host.hide(); });
-  if (prefs.bot?.controls && (prefs.bot.buttons?.settings ?? true)) {
-    add('打开设置', '', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
+    b.className = `m-tile${a.cls ? ' ' + a.cls : ''}`;
+    b.dataset.action = id;
+    b.innerHTML = '<span class="ic"></span>';
+    drawAction(b, id);
+    b.addEventListener('click', () => {
+      sfx.tick();
+      if (!a.keep) closeMenu();
+      a.run();
+      if (a.keep) drawAction(b, id);
+    });
+    grid.appendChild(b);
   }
+  menu.append(grid);
   menu.style.width = '';
   menu.hidden = false;
   // focused, so a click anywhere else blurs the window and folds the menu
@@ -446,17 +535,21 @@ function openMenu(x, y) {
   menu.style.left = f(clamp(x, 8, innerWidth - w - 8)) + 'px';
   menu.style.top = f(clamp(y - h, 8, innerHeight - h - 8)) + 'px';
 }
-/** Avatar, name and the bot's pause and quit controls, when the World offers them; settings is a row at the bottom. */
+
+/**
+ * Avatar and name, then the run controls the embedding app lends, as in the console's rail foot:
+ * pause/resume, settings and the power button (which asks first). Without a bot the name is Coo's.
+ */
 function renderMenuHead(confirmQuit = false) {
-  const head = menu.querySelector('.m-head'), bot = prefs.bot;
-  if (!head || !bot) return;
+  const head = menu.querySelector('.m-head'), bot = prefs.bot || {};
+  if (!head) return;
   head.classList.toggle('confirm', confirmQuit);
   head.innerHTML = '<span class="m-avatar"></span><span class="m-name"></span><span class="m-acts"></span>';
   head.querySelector('.m-avatar').innerHTML = bot.avatar
     ? `<img alt="" src="/api/avatar?v=${encodeURIComponent(bot.avatar)}">`
     : `<svg viewBox="18 18 220 220" aria-hidden="true">${mini('neutral', ctl.skin)}</svg>`;
   const name = head.querySelector('.m-name');
-  name.textContent = name.title = confirmQuit ? bot.quitPrompt : bot.name;
+  name.textContent = name.title = confirmQuit ? bot.quitPrompt : (bot.name || 'Coo');
   const acts = head.querySelector('.m-acts');
   const act = (iconHtml, label, fn, cls = 'm-act') => {
     const b = document.createElement('button');
@@ -473,106 +566,99 @@ function renderMenuHead(confirmQuit = false) {
   }
   // only the controls the embedding app lent; a server without `buttons` lends all three
   const has = bot.buttons ?? { pause: true, settings: true, quit: true };
-  if (has.pause) act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }));
-  if (has.quit) act(ICONS.power, bot.quitLabel, () => renderMenuHead(true));
+  if (has.pause) act(bot.paused ? ICONS.play : ICONS.pause, bot.paused ? '继续(现在暂停着)' : '暂停', () => send({ t: 'control', action: bot.paused ? 'resume' : 'pause' }), `m-act run${bot.paused ? ' paused' : ''}`);
+  if (has.settings) act(ICONS.settings, '打开设置', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
+  if (has.quit) act(ICONS.power, bot.quitLabel, () => renderMenuHead(true), 'm-act power');
 }
-function openSubmenu(item, choices, current, pick) {
-  if (menu.querySelector('.submenu')?.dataset.for === item.firstChild.textContent) return;
-  closeSubmenu();
-  const sub = document.createElement('div');
-  sub.className = 'submenu';
-  sub.dataset.for = item.firstChild.textContent;
-  sub.setAttribute('role', 'menu');
-  for (const [value, label] of Object.entries(choices)) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.setAttribute('role', 'menuitemradio'); b.setAttribute('aria-checked', String(value === current));
-    b.innerHTML = '<span></span><span class="val"></span>';
-    b.firstChild.textContent = label; b.lastChild.textContent = value === current ? '✓' : '';
-    b.addEventListener('click', () => { sfx.tick(); pick(value); closeMenu(); });
-    sub.appendChild(b);
-  }
-  menu.appendChild(sub);
-  // beside the menu, on whichever side has room, level with the item
-  const r = menu.getBoundingClientRect(), w = sub.offsetWidth, h = sub.offsetHeight;
-  const right = r.left + menu.offsetWidth + 4 + w <= innerWidth - 8;
-  sub.style.left = f(right ? menu.offsetWidth + 4 : -w - 4) + 'px';
-  sub.style.top = f(clamp(item.offsetTop - 6, 8 - r.top, innerHeight - 8 - h - r.top)) + 'px';
-}
-function closeSubmenu() { menu.querySelector('.submenu')?.remove(); }
-function closeMenu() { menu.hidden = true; closeSubmenu(); }
+function closeMenu() { menu.hidden = true; }
 
-function toggleTheme() {
-  const theme = prefs.theme === 'dark' ? 'light' : 'dark';
-  applyPrefs({ theme });
-  send({ t: 'prefs', theme });
+/** Redraws whatever shows an action: the open menu's tiles and the hover buttons. */
+function refreshButtons() {
+  for (const b of menu.querySelectorAll('.m-tile')) drawAction(b, b.dataset.action);
+  renderTools();
 }
 
-/* ---------- hover buttons: type a line; voice input on/off, held down to send the sentence now ---------- */
+/* ---------- hover buttons: the actions chosen in settings (chat and voice by default), beside the pet ---------- */
 /** Seconds the buttons stay after the pointer leaves both the pet and them. */
 const TOOLS_LINGER = .8;
 /** Milliseconds the voice button is held before what was heard goes out. */
 const HOLD_TO_SEND = 500;
 let toolsUntil = 0;
-toolChat.innerHTML = ICONS.chat;
-toolMic.style.setProperty('--hold', HOLD_TO_SEND + 'ms');
-toolChat.addEventListener('click', () => { toolsUntil = 0; openInput(); });
+let toolIds = '';
 
-function toggleVoice() {
-  const on = !prefs.voice.enabled;
-  // shown at once; the World's next prefs confirm it
-  prefs.voice = { ...prefs.voice, enabled: on };
-  renderMic();
-  send({ t: 'prefs', mic: on });
+function renderTools() {
+  const ids = prefs.hoverButtons.filter(available).slice(0, MAX_HOVER);
+  if (ids.join(',') !== toolIds) {
+    toolIds = ids.join(',');
+    endHold();
+    tools.innerHTML = '';
+    // up to three in a column, then a second column
+    tools.style.gridTemplateRows = `repeat(${Math.min(3, Math.max(1, ids.length))}, auto)`;
+    for (const id of ids) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'tool'; b.dataset.action = id;
+      b.innerHTML = '<span class="ic"></span>';
+      if (id === 'voice') wireVoiceTool(b);
+      else b.addEventListener('click', () => { sfx.tick(); if (!ACTIONS[id].keep) toolsUntil = 0; ACTIONS[id].run(); refreshButtons(); });
+      tools.appendChild(b);
+    }
+  }
+  for (const b of tools.children) drawAction(b, b.dataset.action);
+  const mic = tools.querySelector('[data-action="voice"]');
+  if (mic) mic.classList.toggle('waiting', prefs.voice.enabled && !prefs.voice.ready);
 }
-function renderMic() {
-  const v = prefs.voice;
-  toolMic.innerHTML = v.enabled ? ICONS.mic : ICONS.micOff;
-  toolMic.classList.toggle('off', !v.enabled);
-  toolMic.classList.toggle('waiting', v.enabled && !v.ready);
-  toolMic.title = !v.enabled ? '语音输入关着:点一下打开'
-    : !v.ready ? `语音输入开着,但${v.detail || '识别服务没有就绪'}。点一下关掉`
-    : `语音输入开着${v.hint ? ':' + v.hint : ''}。点一下关掉,长按直接提交这句话`;
-  toolMic.setAttribute('aria-label', toolMic.title);
-  toolMic.setAttribute('aria-pressed', String(v.enabled));
-}
-renderMic();
 
 /** A press shorter than HOLD_TO_SEND switches voice input; a longer one sends what was heard so far. */
-const hold = { timer: 0, sent: false };
+const hold = { timer: 0, sent: false, el: null };
 function endHold() {
   clearTimeout(hold.timer);
   hold.timer = 0;
-  toolMic.classList.remove('holding');
+  hold.el?.classList.remove('holding');
 }
-toolMic.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0) return;
-  hold.sent = false;
-  if (!prefs.voice.enabled || !prefs.voice.ready) return;
-  toolMic.classList.add('holding');
-  hold.timer = setTimeout(() => {
+function wireVoiceTool(b) {
+  b.style.setProperty('--hold', HOLD_TO_SEND + 'ms');
+  b.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    hold.sent = false; hold.el = b;
+    if (!prefs.voice.enabled || !prefs.voice.ready) return;
+    b.classList.add('holding');
+    hold.timer = setTimeout(() => {
+      endHold();
+      hold.sent = true;
+      send({ t: 'commit' });
+      sfx.select();
+      b.classList.remove('sent'); void b.offsetWidth; b.classList.add('sent');
+    }, HOLD_TO_SEND);
+  });
+  b.addEventListener('pointerup', (e) => {
+    if (e.button !== 0) return;
+    const sent = hold.sent;
     endHold();
-    hold.sent = true;
-    send({ t: 'commit' });
-    sfx.select();
-    toolMic.classList.remove('sent'); void toolMic.offsetWidth; toolMic.classList.add('sent');
-  }, HOLD_TO_SEND);
-});
-toolMic.addEventListener('pointerup', (e) => {
-  if (e.button !== 0) return;
-  const sent = hold.sent;
-  endHold();
-  hold.sent = false;
-  if (!sent) { toggleVoice(); sfx.tick(); }
-});
-toolMic.addEventListener('pointerleave', () => { endHold(); hold.sent = true; });
-toolMic.addEventListener('pointercancel', () => { endHold(); hold.sent = true; });
-// the pointer handlers act on mouse and touch; a click with no pointer is the keyboard
-toolMic.addEventListener('click', (e) => { if (e.detail === 0) { toggleVoice(); sfx.tick(); } });
+    hold.sent = false;
+    if (!sent) { toggleVoice(); sfx.tick(); }
+  });
+  b.addEventListener('pointerleave', () => { endHold(); hold.sent = true; });
+  b.addEventListener('pointercancel', () => { endHold(); hold.sent = true; });
+  // the pointer handlers act on mouse and touch; a click with no pointer is the keyboard
+  b.addEventListener('click', (e) => { if (e.detail === 0) { toggleVoice(); sfx.tick(); } });
+}
 
+/** Where the cursor is, in page pixels, or null when it is off the page. */
+const cursor = { at: null };
+function overTools(p) {
+  if (tools.hidden) return false;
+  const r = tools.getBoundingClientRect();
+  // the gaps between the buttons and a little margin count too
+  return p.x >= r.left - 6 && p.x <= r.right + 6 && p.y >= r.top - 6 && p.y <= r.bottom + 6;
+}
 function stepTools() {
-  tools.hidden = !(ctl.time < toolsUntil && !ctl.pressing && !ctl.busy() && menu.hidden);
+  // shown while the cursor is on the pet or on the buttons, and a moment after it leaves; decided
+  // from where the cursor is now, not from the last move event, which may be stale
+  const p = cursor.at;
+  if (p && (ctl.hitPet(p) || overTools(p))) toolsUntil = ctl.time + TOOLS_LINGER;
+  tools.hidden = !(ctl.time < toolsUntil && !ctl.pressing && !ctl.busy() && menu.hidden && toolIds !== '');
   if (tools.hidden) endHold();
-  toolMic.classList.toggle('live', listen.phase === 'hearing');
+  tools.querySelector('[data-action="voice"]')?.classList.toggle('live', listen.phase === 'hearing');
 }
 
 /* ---------- pointer ---------- */
@@ -584,16 +670,26 @@ function setInteractive(on) {
   interactive = on;
   host.setInteractive(on);
 }
-const overUi = (e) => e.target.closest && e.target.closest('.bubble:not([hidden]), .menu:not([hidden]), .tools:not([hidden])');
+const UI_SELECTOR = '.bubble:not([hidden]), .menu:not([hidden]), .tools:not([hidden])';
+const overUi = (e) => e.target.closest && e.target.closest(UI_SELECTOR);
 document.addEventListener('pointermove', (e) => {
   pointerSeen = true;
   lastPointer.x = e.clientX; lastPointer.y = e.clientY;
   const p = { x: e.clientX, y: e.clientY };
-  const cursor = ctl.pointerMove(p);
-  stage.style.cursor = cursor;
-  const overPet = ctl.hitPet(p);
-  if (overPet || (e.target.closest && e.target.closest('.tools'))) toolsUntil = ctl.time + TOOLS_LINGER;
-  setInteractive(ctl.pressing || overPet || !!overUi(e));
+  cursor.at = p;
+  stage.style.cursor = ctl.pointerMove(p);
+  setInteractive(ctl.pressing || ctl.hitPet(p) || !!overUi(e));
+});
+/**
+ * The pet window also reports where the cursor is on its own, a few times a second: a click-through
+ * window may miss the move that takes the cursor off the pet (onto the taskbar, another screen),
+ * and the hover buttons would then stay.
+ */
+host?.onCursor?.((p) => {
+  cursor.at = p;
+  if (!p) { if (!ctl.pressing) setInteractive(false); return; }
+  const el = document.elementFromPoint(p.x, p.y);
+  setInteractive(ctl.pressing || ctl.hitPet(p) || !!el?.closest?.(UI_SELECTOR));
 });
 stage.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
@@ -603,7 +699,7 @@ stage.addEventListener('pointerdown', (e) => {
 const up = () => { ctl.pointerUp(); stage.style.cursor = ''; };
 stage.addEventListener('pointerup', up);
 stage.addEventListener('pointercancel', up);
-document.addEventListener('pointerleave', () => ctl.pointerLeave());
+document.addEventListener('pointerleave', () => { cursor.at = null; ctl.pointerLeave(); });
 stage.addEventListener('dblclick', (e) => { if (ctl.hitPet({ x: e.clientX, y: e.clientY })) openInput(); });
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault();

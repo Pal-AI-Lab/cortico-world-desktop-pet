@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('petHost', {
   releaseFocus: () => ipcRenderer.send('pet:releaseFocus'),
   hide: () => ipcRenderer.send('pet:hide'),
   openDress: () => ipcRenderer.send('pet:openDress'),
+  /** Where the cursor is, in page pixels, or null off the window: called a few times a second. */
+  onCursor: (cb) => ipcRenderer.on('pet:cursor', (_e, p) => cb(p)),
   /** Screen pixels behind `rect`, minus `skip` rects (page coordinates), as a flat [r, g, b, …]; null where the screen cannot be read. */
   sampleBackdrop: (rect, skip) => ipcRenderer.invoke('pet:sampleBackdrop', { rect, skip }),
 });

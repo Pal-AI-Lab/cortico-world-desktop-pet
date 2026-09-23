@@ -11,6 +11,8 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, session, shell } = require('electron');
 const { join } = require('node:path');
 
+/** Milliseconds between the cursor reports the page gets. */
+const CURSOR_EVERY_MS = 100;
 /** Most pixels one backdrop sample returns. */
 const BACKDROP_SAMPLES = 1500;
 
@@ -180,7 +182,19 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
       return { action: 'deny' };
     });
     win.once('ready-to-show', () => win.showInactive());
-    win.on('closed', () => { win = null; });
+    // the page learns where the cursor is even when the click-through window misses its moves
+    let last = '';
+    const cursorTimer = setInterval(() => {
+      if (!win || !win.isVisible()) return;
+      const pt = screen.getCursorScreenPoint(), b = win.getBounds();
+      const inside = pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height;
+      const at = inside ? { x: pt.x - b.x, y: pt.y - b.y } : null;
+      const key = at ? `${at.x},${at.y}` : '';
+      if (key === last) return;
+      last = key;
+      win.webContents.send('pet:cursor', at);
+    }, CURSOR_EVERY_MS);
+    win.on('closed', () => { clearInterval(cursorTimer); win = null; });
     // page console lines reach the World's log through stdout
     win.webContents.on('console-message', (e) => { if (e.level !== 'debug') console.log(`[page:${e.level}] ${e.message}`); });
     win.webContents.on('did-fail-load', (_e, code, desc, failedUrl) => console.log(`[page:error] 加载失败 ${code} ${desc} ${failedUrl}`));

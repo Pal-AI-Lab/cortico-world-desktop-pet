@@ -22,7 +22,7 @@ import { nowIso } from 'cortico/core/util.ts';
 import type { Language } from 'cortico/core/language.ts';
 import type { DeepPartial } from 'cortico/world.ts';
 import {
-  DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID,
+  DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID, MAX_HOVER_BUTTONS, PET_ACTIONS, hoverButtonList,
   type AsrEngine, type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
 } from './config.ts';
 import { PetServer, type PageMessage } from './server.ts';
@@ -51,6 +51,8 @@ const WALK_TIMEOUT_MS = 30_000;
 const TOUCH_MERGE_MS = 2500;
 /** How long a confirmation bubble waits for an answer. */
 const CONFIRM_TIMEOUT_MS = 60_000;
+/** How often config edits from the console reach the pages: short enough that the size slider moves the pet with it. */
+const PREFS_SYNC_MS = 150;
 /** Talk-key polling interval: well under the shortest key tap. */
 const HOTKEY_POLL_MS = 30;
 
@@ -210,7 +212,7 @@ export class DesktopPetWorld implements World {
     if (this.cfg.asr.enabled) void this.startVoiceBackend();
     await this.syncHotkey();
     this.prefsKey = this.prefsSignature();
-    this.prefsTimer = setInterval(() => this.syncPrefs(), 1000);
+    this.prefsTimer = setInterval(() => this.syncPrefs(), PREFS_SYNC_MS);
   }
 
   async stop(): Promise<void> {
@@ -274,6 +276,7 @@ export class DesktopPetWorld implements World {
       roam: this.cfg.roam,
       sound: this.cfg.sound,
       theme: this.cfg.theme,
+      hoverButtons: hoverButtonList(this.cfg.hoverButtons),
       scale: this.cfg.window.scale,
       user: this.cfg.user,
       mic: this.micWanted(),
@@ -307,7 +310,7 @@ export class DesktopPetWorld implements World {
     return JSON.stringify(s);
   }
 
-  /** Config is a live object edited by the console; changes reach the pages within a second. */
+  /** Config is a live object edited by the console; changes reach the pages within PREFS_SYNC_MS. */
   private syncPrefs(): void {
     this.segmenter.configure(this.segmentConfig());
     if (this.cfg.asr.enabled && this.runningEngine && this.runningEngine !== this.engine()) void this.startVoiceBackend();
@@ -334,6 +337,7 @@ export class DesktopPetWorld implements World {
       ready,
       detail: ready ? null : b?.phase === 'starting' ? '识别服务启动中' : b?.detail ?? '识别服务没有运行',
       hint: this.talkHint(),
+      mode: this.micMode(),
     };
   }
 
@@ -350,6 +354,10 @@ export class DesktopPetWorld implements World {
     if (typeof prefs.sound === 'boolean') patch.sound = prefs.sound;
     if (prefs.theme === 'dark' || prefs.theme === 'light') patch.theme = prefs.theme as PetTheme;
     if (typeof prefs.mic === 'boolean') patch.asr = { enabled: prefs.mic };
+    if (Array.isArray(prefs.hoverButtons)) {
+      const ids = prefs.hoverButtons.filter((id): id is string => typeof id === 'string' && (PET_ACTIONS as readonly string[]).includes(id));
+      patch.hoverButtons = hoverButtonList(ids.slice(0, MAX_HOVER_BUTTONS).join(',')).join(',');
+    }
     const mic = prefs.micSettings as Record<string, unknown> | undefined;
     if (mic && typeof mic === 'object') {
       const m: { mode?: MicMode; hotkey?: string; deviceId?: string } = {};
