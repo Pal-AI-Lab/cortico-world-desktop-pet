@@ -16,11 +16,15 @@ document.body.classList.add(host ? 'desk' : 'tab');
 
 const stage = $('#stage');
 const bubble = $('#bubble'), heardEl = $('#heard'), trail = $('#trail'), menu = $('#menu');
-const tools = $('#tools'), toolChat = $('#toolChat'), toolTheme = $('#toolTheme');
+const tools = $('#tools'), toolChat = $('#toolChat'), toolMic = $('#toolMic');
 const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
 
-const prefs = { roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false, micDevice: '', bot: null };
+const prefs = {
+  roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false, micDevice: '', bot: null,
+  /** Voice input: switched on, recognizer ready, why not, how to talk. */
+  voice: { enabled: false, ready: false, detail: null, hint: '' },
+};
 const sfx = createSfx();
 if (host) sfx.unlock();
 else ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => sfx.unlock(), { capture: true }));
@@ -61,11 +65,12 @@ function applyPrefs(p) {
   if (p.skin) { const s = normalizeSkin(p.skin); ctl.setSkin(s); skinStyle.textContent = skinCss(s); }
   if (p.roam) { prefs.roam = p.roam; ctl.setRoam(p.roam); }
   if (typeof p.sound === 'boolean') { prefs.sound = p.sound; sfx.set(p.sound); }
-  if (p.theme === 'dark' || p.theme === 'light') { prefs.theme = p.theme; applyTheme(p.theme, toolTheme); }
+  if (p.theme === 'dark' || p.theme === 'light') { prefs.theme = p.theme; applyTheme(p.theme); }
   if (typeof p.scale === 'number') { prefs.scale = p.scale; ctl.resize(); }
   if (typeof p.user === 'string') prefs.user = p.user;
   if (typeof p.micDevice === 'string' && p.micDevice !== prefs.micDevice) { prefs.micDevice = p.micDevice; stopMic(); }
   if (typeof p.mic === 'boolean') { prefs.mic = p.mic; p.mic && !watching ? startMic() : stopMic(); }
+  if (p.voice && typeof p.voice === 'object') { prefs.voice = { ...prefs.voice, ...p.voice }; renderMic(); }
   if (p.bot) { prefs.bot = p.bot; if (!menu.hidden) renderMenuHead(); }
   if (typeof p.thinking === 'boolean') ctl.setThinking(p.thinking);
 }
@@ -154,8 +159,24 @@ function openBubble(kind, html) {
   bubble.classList.add('pop');
 }
 function closeBubble() {
+  releaseKeys(item);
   bubble.hidden = true; bubble.innerHTML = '';
   item = null;
+}
+
+/**
+ * While a question's options are up, the pet window takes the keyboard so 1–9 pick one right
+ * away, and gives it back to the window that had it once the question is answered or gone.
+ */
+function grabKeys(it) {
+  if (!host?.grabFocus || !it.options.length) return;
+  it.grabbed = true;
+  host.grabFocus();
+}
+function releaseKeys(it) {
+  if (!it?.grabbed) return;
+  it.grabbed = false;
+  host.releaseFocus();
 }
 
 function startItem(it) {
@@ -220,7 +241,7 @@ function showOptions(it) {
   it.options.forEach((label, i) => {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'b-opt';
-    b.innerHTML = `<kbd>${i + 1}</kbd><span></span>`;
+    b.innerHTML = i < 9 ? `<kbd>${i + 1}</kbd><span></span>` : '<span></span>';
     b.querySelector('span').textContent = label;
     b.style.animationDelay = (i * .07) + 's';
     b.addEventListener('click', () => answer(b, { index: i }));
@@ -241,6 +262,7 @@ function showOptions(it) {
     box.appendChild(form);
   }
   box.hidden = false;
+  grabKeys(it);
 }
 
 function answer(node, a) {
@@ -251,6 +273,8 @@ function answer(node, a) {
   node.classList.add('chosen');
   bubble.querySelectorAll('.b-opt, .b-own').forEach((n) => { if (n !== node) n.classList.add('dim'); });
   send(it.confirm ? { t: 'confirmed', id: it.id, index: a.index } : { t: 'answer', askId: it.id, ...a });
+  // the bubble stays a moment longer; the keyboard goes back now
+  releaseKeys(it);
   ctl.setExpr('happy');
   setTimeout(() => { if (item === it) closeBubble(); }, 700);
 }
@@ -262,7 +286,7 @@ function dismissAsk() {
   closeBubble();
 }
 
-/* ---------- typed input: right-click → 说点什么, or double-click ---------- */
+/* ---------- typed input: the hover button, or double-click ---------- */
 function openInput() {
   closeMenu();
   if (item && item.kind === 'ask' && !item.answered) return;
@@ -284,21 +308,23 @@ function openInput() {
 }
 
 /* ---------- listening ---------- */
-const listen = { phase: null, text: '', closeAt: 0 };
+/** `text` is settled, `interim` the sentence still being heard (Windows' recognizer reports it as it goes). */
+const listen = { phase: null, text: '', interim: '', closeAt: 0 };
 function onListen(m) {
   if (m.phase === 'start') {
     if (!listen.phase) sfx.listenStart();
     listen.phase = 'hearing'; listen.closeAt = 0;
     ctl.setListening(true);
-    showHeard(listen.text, true);
+    showHeard(listen.text, true, undefined, listen.interim);
   } else if (m.phase === 'transcribing') {
     listen.phase = listen.phase || 'hearing';
-    showHeard(listen.text, true);
+    showHeard(listen.text, true, undefined, listen.interim);
   } else if (m.phase === 'partial') {
     listen.text = m.text || '';
-    showHeard(listen.text, true);
+    listen.interim = m.interim || '';
+    showHeard(listen.text, true, undefined, listen.interim);
   } else if (m.phase === 'heard') {
-    listen.text = m.text || '';
+    listen.text = m.text || ''; listen.interim = '';
     listen.phase = 'done';
     showHeard(listen.text, false, '听到了');
     sfx.listenEnd();
@@ -307,20 +333,22 @@ function onListen(m) {
     listen.closeAt = ctl.time + 2.2;
   } else if (m.phase === 'none') {
     if (listen.phase === 'done') return;
-    listen.phase = null; listen.text = '';
+    listen.phase = null; listen.text = ''; listen.interim = '';
     heardEl.hidden = true; trail.hidden = true;
     ctl.setListening(false);
   }
 }
-function showHeard(text, live, hint) {
+/** `text` is settled; `interim` is the sentence still being heard, greyed, and may still change. */
+function showHeard(text, live, hint, interim = '') {
   heardEl.hidden = false; trail.hidden = false;
-  heardEl.innerHTML = `<p class="b-text"><span class="fin"></span>${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</p><span class="b-hint"></span>`;
+  heardEl.innerHTML = `<p class="b-text"><span class="fin"></span><span class="interim"></span>${live ? '<span class="caret" aria-hidden="true"></span>' : ''}</p><span class="b-hint"></span>`;
   heardEl.querySelector('.fin').textContent = text;
-  heardEl.querySelector('.b-hint').textContent = hint || (text ? '还在听…' : '正在听…');
+  heardEl.querySelector('.interim').textContent = text && interim ? ' ' + interim : interim;
+  heardEl.querySelector('.b-hint').textContent = hint || (text || interim ? '还在听…' : '正在听…');
 }
 function stepListen() {
   if (listen.phase === 'done' && ctl.time > listen.closeAt) {
-    listen.phase = null; listen.text = '';
+    listen.phase = null; listen.text = ''; listen.interim = '';
     heardEl.hidden = true; trail.hidden = true;
   }
 }
@@ -391,18 +419,26 @@ function openMenu(x, y) {
     b.setAttribute('aria-haspopup', 'menu');
     b.addEventListener('pointerenter', () => openSubmenu(b, choices, current, pick));
   };
-  add('说点什么', '', openInput);
-  add('麦克风', prefs.mic ? '开' : '关', () => { send({ t: 'prefs', mic: !prefs.mic }); closeMenu(); });
+  add('语音输入', prefs.voice.enabled ? '开' : '关', () => { toggleVoice(); closeMenu(); });
   choose('行为模式', ROAM, prefs.roam, (roam) => send({ t: 'prefs', roam }));
+  add('黑白模式', prefs.theme === 'dark' ? '夜间' : '白天', () => { toggleTheme(); closeMenu(); });
   add('音效', prefs.sound ? '开' : '关', () => { send({ t: 'prefs', sound: !prefs.sound }); closeMenu(); });
   menu.appendChild(document.createElement('hr'));
-  add('装扮…', '', () => { closeMenu(); if (host?.openDress) host.openDress(); else window.open('/dress', '_blank'); });
+  // an embedding app that lends dressing shows its own dress page; otherwise the pet's dress window
+  add('装扮…', '', () => {
+    closeMenu();
+    if (prefs.bot?.buttons?.dress) send({ t: 'control', action: 'dress' });
+    else if (host?.openDress) host.openDress();
+    else window.open('/dress', '_blank');
+  });
   if (host?.hide) add('隐藏桌宠', '', () => { closeMenu(); host.hide(); });
   if (prefs.bot?.controls && (prefs.bot.buttons?.settings ?? true)) {
     add('打开设置', '', () => { closeMenu(); send({ t: 'control', action: 'settings' }); });
   }
   menu.style.width = '';
   menu.hidden = false;
+  // focused, so a click anywhere else blurs the window and folds the menu
+  host?.focus?.();
   // held at its opening width: the quit confirmation in the header must not widen the menu
   menu.style.width = getComputedStyle(menu).width;
   // layout size: the opening animation scales the box, so its bounding rect is still shrunk here
@@ -465,21 +501,78 @@ function openSubmenu(item, choices, current, pick) {
 function closeSubmenu() { menu.querySelector('.submenu')?.remove(); }
 function closeMenu() { menu.hidden = true; closeSubmenu(); }
 
-/* ---------- hover buttons: type a line, switch dark/light ---------- */
-/** Seconds the buttons stay after the pointer leaves both the pet and them. */
-const TOOLS_LINGER = .8;
-let toolsUntil = 0;
-toolChat.innerHTML = ICONS.chat;
-applyTheme(prefs.theme, toolTheme);
-toolChat.addEventListener('click', () => { toolsUntil = 0; openInput(); });
-toolTheme.addEventListener('click', () => {
+function toggleTheme() {
   const theme = prefs.theme === 'dark' ? 'light' : 'dark';
   applyPrefs({ theme });
   send({ t: 'prefs', theme });
-  sfx.tick();
+}
+
+/* ---------- hover buttons: type a line; voice input on/off, held down to send the sentence now ---------- */
+/** Seconds the buttons stay after the pointer leaves both the pet and them. */
+const TOOLS_LINGER = .8;
+/** Milliseconds the voice button is held before what was heard goes out. */
+const HOLD_TO_SEND = 500;
+let toolsUntil = 0;
+toolChat.innerHTML = ICONS.chat;
+toolMic.style.setProperty('--hold', HOLD_TO_SEND + 'ms');
+toolChat.addEventListener('click', () => { toolsUntil = 0; openInput(); });
+
+function toggleVoice() {
+  const on = !prefs.voice.enabled;
+  // shown at once; the World's next prefs confirm it
+  prefs.voice = { ...prefs.voice, enabled: on };
+  renderMic();
+  send({ t: 'prefs', mic: on });
+}
+function renderMic() {
+  const v = prefs.voice;
+  toolMic.innerHTML = v.enabled ? ICONS.mic : ICONS.micOff;
+  toolMic.classList.toggle('off', !v.enabled);
+  toolMic.classList.toggle('waiting', v.enabled && !v.ready);
+  toolMic.title = !v.enabled ? '语音输入关着:点一下打开'
+    : !v.ready ? `语音输入开着,但${v.detail || '识别服务没有就绪'}。点一下关掉`
+    : `语音输入开着${v.hint ? ':' + v.hint : ''}。点一下关掉,长按直接提交这句话`;
+  toolMic.setAttribute('aria-label', toolMic.title);
+  toolMic.setAttribute('aria-pressed', String(v.enabled));
+}
+renderMic();
+
+/** A press shorter than HOLD_TO_SEND switches voice input; a longer one sends what was heard so far. */
+const hold = { timer: 0, sent: false };
+function endHold() {
+  clearTimeout(hold.timer);
+  hold.timer = 0;
+  toolMic.classList.remove('holding');
+}
+toolMic.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  hold.sent = false;
+  if (!prefs.voice.enabled || !prefs.voice.ready) return;
+  toolMic.classList.add('holding');
+  hold.timer = setTimeout(() => {
+    endHold();
+    hold.sent = true;
+    send({ t: 'commit' });
+    sfx.select();
+    toolMic.classList.remove('sent'); void toolMic.offsetWidth; toolMic.classList.add('sent');
+  }, HOLD_TO_SEND);
 });
+toolMic.addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return;
+  const sent = hold.sent;
+  endHold();
+  hold.sent = false;
+  if (!sent) { toggleVoice(); sfx.tick(); }
+});
+toolMic.addEventListener('pointerleave', () => { endHold(); hold.sent = true; });
+toolMic.addEventListener('pointercancel', () => { endHold(); hold.sent = true; });
+// the pointer handlers act on mouse and touch; a click with no pointer is the keyboard
+toolMic.addEventListener('click', (e) => { if (e.detail === 0) { toggleVoice(); sfx.tick(); } });
+
 function stepTools() {
   tools.hidden = !(ctl.time < toolsUntil && !ctl.pressing && !ctl.busy() && menu.hidden);
+  if (tools.hidden) endHold();
+  toolMic.classList.toggle('live', listen.phase === 'hearing');
 }
 
 /* ---------- pointer ---------- */
@@ -517,6 +610,8 @@ document.addEventListener('contextmenu', (e) => {
   if (ctl.hitPet({ x: e.clientX, y: e.clientY })) openMenu(e.clientX, e.clientY);
 });
 document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.menu')) closeMenu(); }, { capture: true });
+// clicks off the figure pass through the window to what is underneath; the window losing focus is how they show here
+window.addEventListener('blur', closeMenu);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     closeMenu();
@@ -525,8 +620,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   const typing = e.target.closest && e.target.closest('input');
-  if (item && item.kind === 'ask' && item.optsShown && !item.answered && !typing && /^[123]$/.test(e.key)) {
-    const b = bubble.querySelectorAll('.b-opt')[+e.key - 1];
+  // the digit row or the number pad, whether or not Num Lock is on
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(e.code) || /^([1-9])$/.exec(e.key);
+  if (item && item.kind === 'ask' && item.optsShown && !item.answered && !typing && digit && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    const b = bubble.querySelectorAll('.b-opt')[+digit[1] - 1];
     if (b) b.click();
   }
 });

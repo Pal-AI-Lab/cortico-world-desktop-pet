@@ -3,14 +3,15 @@
  *
  * Output goes through four tools that drive the pet page (bubble, options, walking,
  * expressions and motions). Input arrives as events: speech heard through the pet window's
- * microphone (transcribed by whisper.cpp), typed text, answers to `pet_ask`, and touches
+ * microphone (transcribed by Windows' own recognizer or whisper.cpp), typed text, answers to `pet_ask`, and touches
  * (poke, petting, being thrown). The page reports what actually happened; receipts and
  * events state only that.
  *
  * Processes owned here: the page server (always, while mounted), the pet window (when
- * `window.enabled`) and the managed whisper.cpp server (when voice input is on and nothing
- * else answers at the endpoint).
+ * `window.enabled`), the system recognizer's helper (voice input on, engine `system`) and the
+ * managed whisper.cpp server (voice input on, engine `whisper`, nothing else answering at the endpoint).
  */
+import type { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -22,13 +23,14 @@ import type { Language } from 'cortico/core/language.ts';
 import type { DeepPartial } from 'cortico/world.ts';
 import {
   DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID,
-  type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
+  type AsrEngine, type DesktopPetConfigSection, type MicMode, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
 } from './config.ts';
 import { PetServer, type PageMessage } from './server.ts';
 import { WindowHost, resolveHostCommand } from './window-host.ts';
 import { RuntimeStore, WHISPER_MODELS, type ArtifactState } from './runtime/store.ts';
 import { WhisperServer, type WhisperServerState } from './asr/whisper-server.ts';
-import { Packer, Segmenter, rmsDb, type SegmentConfig, type Utterance } from './asr/segmenter.ts';
+import { SystemRecognizer, systemRecognizerSupported, type SystemRecognizerState, type SystemSentence } from './asr/system-recognizer.ts';
+import { Packer, Segmenter, rmsDb, type SegmentConfig, type SegmentSink, type Utterance } from './asr/segmenter.ts';
 import { hotkeyLabel, parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
 import { looksHallucinated, transcribe } from './asr/client.ts';
 import { toSimplified } from './asr/simplify.ts';
@@ -37,7 +39,7 @@ import { DESKTOP_PET_TOOL_DECLS } from './tools.ts';
 
 export const DESKTOP_PET_PANEL_DECLS: readonly WorldPanelDecl[] = [
   { id: 'pet', title: '桌宠', description: '窗口、装扮与窗口运行时。', getMethods: ['state'] },
-  { id: 'voice', title: '语音输入', description: '识别服务、模型、电平与识别结果。', getMethods: ['state'] },
+  { id: 'voice', title: '语音输入', description: '识别引擎、电平与识别结果。', getMethods: ['state'] },
 ];
 
 const WEB_DIR = fileURLToPath(new URL('../web/', import.meta.url));
@@ -61,6 +63,8 @@ export interface PetBotControls {
   isPaused?(): boolean;
   setPaused?(paused: boolean): void;
   openSettings?(): void;
+  /** Shows the embedding app's own dress page; the menu's 「装扮」 then opens it instead of the pet's dress window. */
+  openDress?(): void;
   quit?(): void;
   /** The power button's label, e.g. "退出 CortiCompanion". */
   quitLabel?: string;
@@ -83,6 +87,8 @@ export interface DesktopPetWorldOptions {
   controls?: PetBotControls;
   /** Reads the talk key; tests pass a scripted one. */
   watchHotkey?: typeof watchHotkey;
+  /** Starts the system recognizer's helper; tests pass a fake. */
+  spawnSystemRecognizer?: typeof spawn;
 }
 
 interface PendingWalk {
@@ -126,6 +132,11 @@ export class DesktopPetWorld implements World {
   private windowHost: WindowHost | null = null;
   private readonly store: RuntimeStore;
   private whisper: WhisperServer | null = null;
+  private system: SystemRecognizer | null = null;
+  /** The engine the running backend belongs to; a config change starts the other one. */
+  private runningEngine: 'system' | 'whisper' | null = null;
+  /** The person asked to send what was heard now, without waiting for the pause that ends a sentence. */
+  private committing = false;
   private readonly segmenter: Segmenter;
   private readonly packer = new Packer({ joinGapMs: 0, maxHoldMs: 8000, minChars: 1 });
   private readonly queue: Utterance[] = [];
@@ -158,6 +169,7 @@ export class DesktopPetWorld implements World {
   constructor(private readonly opts: DesktopPetWorldOptions) {
     this.cfg = opts.cfg;
     this.segmenter = new Segmenter(this.segmentConfig(), FRAME_MS);
+    this.segmenter.setSink(this.sink);
     this.store = new RuntimeStore({ runtimesRoot: opts.runtimesRoot, modelsDir: opts.modelsDir, fetchImpl: opts.fetchImpl });
     this.server = new PetServer({
       port: () => this.cfg.port,
@@ -189,7 +201,13 @@ export class DesktopPetWorld implements World {
       log: host.log,
       fetchImpl: this.opts.fetchImpl,
     });
-    if (this.cfg.asr.enabled && this.cfg.asr.manageServer) void this.startVoiceBackend();
+    this.system = new SystemRecognizer({
+      language: () => this.cfg.asr.language,
+      timeoutMs: () => this.cfg.asr.timeoutMs,
+      log: host.log,
+      spawnImpl: this.opts.spawnSystemRecognizer,
+    });
+    if (this.cfg.asr.enabled) void this.startVoiceBackend();
     await this.syncHotkey();
     this.prefsKey = this.prefsSignature();
     this.prefsTimer = setInterval(() => this.syncPrefs(), 1000);
@@ -212,6 +230,7 @@ export class DesktopPetWorld implements World {
     this.voiceSockets.clear();
     await this.windowHost?.stop();
     await this.whisper?.stop();
+    await this.system?.stop();
     await this.server.stop();
     this.host = null;
   }
@@ -258,6 +277,7 @@ export class DesktopPetWorld implements World {
       scale: this.cfg.window.scale,
       user: this.cfg.user,
       mic: this.micWanted(),
+      voice: this.voiceBrief(),
       micDevice: this.cfg.asr.mic.deviceId,
       thinking: this.thinking,
       bot: this.botInfo(),
@@ -274,7 +294,7 @@ export class DesktopPetWorld implements World {
       name: this.opts.botName ?? '',
       avatar,
       controls: !!c,
-      buttons: { pause, settings: !!c?.openSettings, quit: !!c?.quit },
+      buttons: { pause, settings: !!c?.openSettings, dress: !!c?.openDress, quit: !!c?.quit },
       paused: pause && c?.isPaused ? c.isPaused() : null,
       quitLabel,
       quitPrompt: quitLabel ? `${quitLabel}?` : '',
@@ -290,6 +310,9 @@ export class DesktopPetWorld implements World {
   /** Config is a live object edited by the console; changes reach the pages within a second. */
   private syncPrefs(): void {
     this.segmenter.configure(this.segmentConfig());
+    if (this.cfg.asr.enabled && this.runningEngine && this.runningEngine !== this.engine()) void this.startVoiceBackend();
+    // the system recognizer serves one language; a new one needs a new helper
+    else if (this.cfg.asr.enabled && this.runningEngine === 'system' && this.system?.languageChanged) void this.startVoiceBackend();
     void this.syncHotkey();
     const key = this.prefsSignature();
     if (key === this.prefsKey) return;
@@ -298,8 +321,20 @@ export class DesktopPetWorld implements World {
   }
 
   private micWanted(): boolean {
-    const phase = this.whisper?.state().phase;
+    const phase = this.backendState()?.phase;
     return this.cfg.asr.enabled && (phase === 'running' || phase === 'external');
+  }
+
+  /** What the pet's microphone button shows: switched on, able to hear, and why not. */
+  private voiceBrief(): Record<string, unknown> {
+    const b = this.backendState();
+    const ready = b?.phase === 'running' || b?.phase === 'external';
+    return {
+      enabled: this.cfg.asr.enabled,
+      ready,
+      detail: ready ? null : b?.phase === 'starting' ? '识别服务启动中' : b?.detail ?? '识别服务没有运行',
+      hint: this.talkHint(),
+    };
   }
 
   private saveSkin(raw: unknown): void {
@@ -324,7 +359,7 @@ export class DesktopPetWorld implements World {
       patch.asr = { ...patch.asr, mic: m };
     }
     if (Object.keys(patch).length) this.opts.persist(patch);
-    if (typeof prefs.mic === 'boolean' && prefs.mic && this.cfg.asr.manageServer) void this.startVoiceBackend();
+    if (typeof prefs.mic === 'boolean' && prefs.mic) void this.startVoiceBackend();
     this.syncPrefs();
   }
 
@@ -375,6 +410,7 @@ export class DesktopPetWorld implements World {
         return;
       }
       case 'control': return this.onControl(String(msg.action));
+      case 'commit': return this.commitSpeech();
     }
   }
 
@@ -383,6 +419,7 @@ export class DesktopPetWorld implements World {
     if (!c) return;
     if (action === 'pause' || action === 'resume') c.setPaused?.(action === 'pause');
     else if (action === 'settings') c.openSettings?.();
+    else if (action === 'dress') c.openDress?.();
     else if (action === 'quit') c.quit?.();
     this.syncPrefs();
   }
@@ -487,11 +524,40 @@ export class DesktopPetWorld implements World {
     return { exe, model };
   }
 
-  async startVoiceBackend(): Promise<WhisperServerState | null> {
-    if (!this.whisper) return null;
-    await this.whisper.start();
+  /** The engine in force: `auto` is Windows' own recognizer on Windows and whisper elsewhere. */
+  engine(): 'system' | 'whisper' {
+    const e: AsrEngine = this.cfg.asr.engine;
+    if (e === 'system' || e === 'whisper') return e;
+    return systemRecognizerSupported() ? 'system' : 'whisper';
+  }
+
+  private backendState(): WhisperServerState | SystemRecognizerState | null {
+    return (this.engine() === 'system' ? this.system?.state() : this.whisper?.state()) ?? null;
+  }
+
+  /**
+   * Starts the engine in force and stops the other one. whisper.cpp starts only when asked
+   * `explicitly` (the panel's start button), when `manageServer` is on, or when something
+   * already answers at the endpoint.
+   */
+  async startVoiceBackend(explicitly = false): Promise<WhisperServerState | SystemRecognizerState | null> {
+    if (!this.whisper || !this.system) return null;
+    const engine = this.engine();
+    if (this.runningEngine !== engine) {
+      if (this.runningEngine === 'system') await this.system.stop();
+      else if (this.runningEngine === 'whisper') await this.whisper.stop();
+      this.runningEngine = engine;
+    }
+    if (engine === 'system') await this.system.start();
+    else if (explicitly || this.cfg.asr.manageServer || await this.whisper.reachable()) await this.whisper.start();
     this.syncPrefs();
-    return this.whisper.state();
+    return this.backendState();
+  }
+
+  private async stopVoiceBackend(): Promise<void> {
+    if (this.engine() === 'system') await this.system?.stop();
+    else await this.whisper?.stop();
+    this.syncPrefs();
   }
 
   /* ---------- talk key ---------- */
@@ -565,6 +631,23 @@ export class DesktopPetWorld implements World {
     this.schedulePack();
   }
 
+  /**
+   * The pet's microphone button, held down: what was heard so far goes out now. The sentence
+   * in progress is cut, and delivery waits only for transcription, not for the closing pause.
+   * A switched-on talk key (toggle) is switched off: that sentence is finished.
+   */
+  private commitSpeech(): void {
+    if (!this.cfg.asr.enabled || !this.micWanted()) return;
+    this.committing = true;
+    if (this.micMode() === 'toggle' && this.talking) this.setTalking(false);
+    else {
+      const tail = this.segmenter.flush();
+      if (tail) this.enqueue(tail);
+      this.wasSpeaking = false;
+    }
+    this.schedulePack();
+  }
+
   private enqueue(u: Utterance): void {
     this.counts.utterances++;
     this.queue.push(u);
@@ -594,22 +677,29 @@ export class DesktopPetWorld implements World {
     try {
       while (this.queue.length) {
         const u = this.queue.shift()!;
-        const res = await transcribe(u.pcm, SAMPLE_RATE, {
-          baseUrl: this.cfg.asr.baseUrl, model: WHISPER_MODELS[this.cfg.asr.model].file, language: this.cfg.asr.language,
-          timeoutMs: this.cfg.asr.timeoutMs, fetchImpl: this.opts.fetchImpl,
-        });
+        const res = u.result
+          ? await u.result
+          : this.engine() === 'system' && this.system
+            ? await this.system.transcribe(u.pcm)
+            : await transcribe(u.pcm, SAMPLE_RATE, {
+              baseUrl: this.cfg.asr.baseUrl, model: WHISPER_MODELS[this.cfg.asr.model].file, language: this.cfg.asr.language,
+              timeoutMs: this.cfg.asr.timeoutMs, fetchImpl: this.opts.fetchImpl,
+            });
         let text = res.text;
         if (this.cfg.asr.simplified) text = toSimplified(text);
         if (res.error || looksHallucinated(text)) {
           this.counts.dropped++;
           this.remember({ text: res.error ? `[失败] ${res.error}` : text, at: Date.now(), ms: res.ms, dropped: true });
           this.voiceFrame({ type: 'dropped', text: res.error ?? text, ms: res.ms });
+          // the page was showing this sentence as it was heard: take it back
+          if (u.result) this.showHeard();
           continue;
         }
         this.packer.add(text, Date.now());
         this.remember({ text, at: Date.now(), ms: res.ms });
         this.voiceFrame({ type: 'text', text, ms: res.ms });
-        this.server.sendPet({ t: 'listen', phase: 'partial', text: this.pendingText(text) });
+        this.pendingText(text);
+        this.showHeard();
       }
     } finally {
       this.transcribing = false;
@@ -623,11 +713,60 @@ export class DesktopPetWorld implements World {
     return this.partial;
   }
 
+  /* ---------- hearing as it is spoken (system engine) ---------- */
+
+  /** The sentence the system recognizer is hearing now, and what it has made of it so far. */
+  private sentence: SystemSentence | null = null;
+  private interim = '';
+
+  /** The segmenter hands each sentence's audio over as it arrives when the engine can take it. */
+  private readonly sink: SegmentSink = {
+    begin: (frames) => {
+      this.sentence = null;
+      this.interim = '';
+      if (this.engine() !== 'system' || !this.system) return;
+      const s: SystemSentence | null = this.system.sentence((text) => {
+        if (this.sentence !== s) return;
+        this.interim = this.cfg.asr.simplified ? toSimplified(text) : text;
+        this.showHeard();
+      });
+      this.sentence = s;
+      if (s) for (const f of frames) s.write(f);
+    },
+    frame: (f) => this.sentence?.write(f),
+    end: (kept) => {
+      const s = this.sentence;
+      this.sentence = null;
+      if (!s) return undefined;
+      const result = s.end();
+      if (!kept && this.interim) { this.interim = ''; this.showHeard(); }
+      else this.interim = '';
+      return kept ? result : undefined;
+    },
+  };
+
+  /** The listening bubble: sentences already transcribed, then the one being heard, greyed. */
+  private showHeard(): void {
+    this.server.sendPet({ t: 'listen', phase: 'partial', text: this.partial, interim: this.interim });
+  }
+
   /** Delivers the packed text once nothing upstream is still open. */
   private schedulePack(): void {
-    const hold = this.segmenter.active || this.transcribing || this.queue.length > 0 || this.segmenter.settleRemainingMs > 0;
-    const text = this.packer.due(Date.now(), hold);
+    const upstream = this.transcribing || this.queue.length > 0;
+    // a commit does not wait for the closing pause, nor for speech begun after it
+    const hold = upstream || (!this.committing && (this.segmenter.active || this.segmenter.settleRemainingMs > 0));
+    const text = this.committing && !upstream ? this.packer.take() : this.packer.due(Date.now(), hold);
+    if (this.committing && !upstream && !text) {
+      // nothing was heard: the committed episode closes empty, unless the talk key still holds it open
+      this.committing = false;
+      if (this.listenOpen && !this.talking && !this.segmenter.active) {
+        this.listenOpen = false;
+        this.partial = '';
+        this.server.sendPet({ t: 'listen', phase: 'none' });
+      }
+    }
     if (text) {
+      this.committing = false;
       this.partial = '';
       this.listenOpen = false;
       this.counts.delivered++;
@@ -759,7 +898,7 @@ export class DesktopPetWorld implements World {
 
   console(language: Language = 'zh'): WorldConsoleDecl {
     const w = this.windowHost?.state();
-    const v = this.whisper?.state();
+    const v = this.backendState();
     const lamps: WorldLamp[] = [
       {
         label: '桌宠窗口',
@@ -817,8 +956,14 @@ export class DesktopPetWorld implements World {
           void this.installVoice(model);
           return this.voiceState();
         }
-        case 'start': await this.startVoiceBackend(); return this.voiceState();
-        case 'stop': await this.whisper?.stop(); this.syncPrefs(); return this.voiceState();
+        case 'start': await this.startVoiceBackend(true); return this.voiceState();
+        case 'stop': await this.stopVoiceBackend(); return this.voiceState();
+        case 'setEngine': {
+          const engine = args[0];
+          if (engine === 'auto' || engine === 'system' || engine === 'whisper') this.opts.persist({ asr: { engine } });
+          if (this.cfg.asr.enabled) await this.startVoiceBackend();
+          return this.voiceState();
+        }
         case 'setEnabled': this.savePrefs({ mic: args[0] === true }); return this.voiceState();
         case 'setMic': {
           this.savePrefs({ micSettings: args[0] });
@@ -836,6 +981,8 @@ export class DesktopPetWorld implements World {
     if (!this.cfg.asr.serverFile && this.store.whisper.state().phase !== 'ready') jobs.push(this.store.whisper.install());
     if (!this.cfg.asr.modelFile && this.store.model(model).state().phase !== 'ready') jobs.push(this.store.model(model).install());
     await Promise.all(jobs);
+    // downloading whisper is choosing it
+    if (this.engine() !== 'whisper') this.opts.persist({ asr: { engine: 'whisper' } });
     if (this.cfg.asr.enabled && this.cfg.asr.manageServer) {
       await this.whisper?.stop();
       await this.startVoiceBackend();
@@ -859,8 +1006,11 @@ export class DesktopPetWorld implements World {
     ) as Record<string, ArtifactState & { bytes: number }>;
     return {
       enabled: this.cfg.asr.enabled,
+      engine: this.engine(),
+      engineSetting: this.cfg.asr.engine,
+      systemSupported: systemRecognizerSupported(),
       model: this.cfg.asr.model,
-      server: this.whisper?.state() ?? null,
+      server: this.backendState(),
       runtime: { ...this.store.whisper.state(), supported: this.store.whisper.supported || !!this.cfg.asr.serverFile },
       models,
       mic: this.micState,

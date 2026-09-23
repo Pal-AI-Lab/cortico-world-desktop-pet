@@ -40,6 +40,49 @@ const gdi = (() => {
   }
 })();
 
+/**
+ * Moving the keyboard between windows while the pet asks something. Windows keeps a background
+ * process from bringing its window forward (`win.focus()` alone does nothing), unless its thread
+ * shares input with the foreground one for the call. Null off Windows or when koffi does not load.
+ */
+const foreground = (() => {
+  if (process.platform !== 'win32') return null;
+  try {
+    const koffi = require('koffi');
+    const user32 = koffi.load('user32.dll'), kernel32 = koffi.load('kernel32.dll');
+    const GetForegroundWindow = user32.func('intptr_t __stdcall GetForegroundWindow()');
+    const SetForegroundWindow = user32.func('int __stdcall SetForegroundWindow(intptr_t hwnd)');
+    const BringWindowToTop = user32.func('int __stdcall BringWindowToTop(intptr_t hwnd)');
+    const GetWindowThreadProcessId = user32.func('uint32_t __stdcall GetWindowThreadProcessId(intptr_t hwnd, void *pid)');
+    const AttachThreadInput = user32.func('int __stdcall AttachThreadInput(uint32_t from, uint32_t to, int attach)');
+    const GetCurrentThreadId = kernel32.func('uint32_t __stdcall GetCurrentThreadId()');
+    return {
+      /** The window with the keyboard now, 0n for none. */
+      current: () => BigInt(GetForegroundWindow()),
+      /** Gives `hwnd` the keyboard; true when Windows let it. */
+      give(hwnd) {
+        const cur = GetForegroundWindow();
+        const them = cur ? GetWindowThreadProcessId(cur, null) : 0, me = GetCurrentThreadId();
+        const attached = them && them !== me && AttachThreadInput(me, them, 1);
+        try {
+          BringWindowToTop(hwnd);
+          return !!SetForegroundWindow(hwnd);
+        } finally {
+          if (attached) AttachThreadInput(me, them, 0);
+        }
+      },
+    };
+  } catch {
+    return null;
+  }
+})();
+
+/** A window's HWND as a BigInt. */
+function hwndOf(win) {
+  const b = win.getNativeWindowHandle();
+  return b.length === 8 ? b.readBigInt64LE(0) : BigInt(b.readInt32LE(0));
+}
+
 /** `w`×`h` screen pixels from (x, y) in physical pixels, shrunk to `ow`×`oh`, as top-down BGRA. */
 function grabScreen(x, y, w, h, ow, oh) {
   const screenDc = gdi.GetDC(null), memDc = gdi.CreateCompatibleDC(screenDc), bmp = gdi.CreateCompatibleBitmap(screenDc, ow, oh);
@@ -153,6 +196,24 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
 
   ipcMain.on('pet:interactive', (_e, on) => { if (win) win.setIgnoreMouseEvents(!on, { forward: true }); });
   ipcMain.on('pet:focus', () => { if (win) win.focus(); });
+  /** The window that had the keyboard before a question took it; it gets it back afterwards. */
+  let lent = 0n;
+  ipcMain.on('pet:grabFocus', () => {
+    if (!win || !win.isVisible()) return;
+    if (foreground) {
+      const own = hwndOf(win), cur = foreground.current();
+      if (cur !== own && foreground.give(own)) lent = cur;
+    }
+    win.focus();
+  });
+  ipcMain.on('pet:releaseFocus', () => {
+    const back = lent;
+    lent = 0n;
+    if (!win) return;
+    // someone clicked elsewhere meanwhile: the keyboard is already where they want it
+    if (foreground) { if (back && foreground.current() === hwndOf(win)) foreground.give(back); }
+    else if (win.isFocused()) win.blur();
+  });
   ipcMain.on('pet:hide', () => { if (win) win.hide(); });
   ipcMain.on('pet:openDress', () => openDress());
   ipcMain.handle('pet:sampleBackdrop', (_e, query) => {

@@ -22,6 +22,8 @@ export type TouchTrigger = 'debounce' | 'piggyback';
 /** hold: listen while the talk key is held; toggle: each press starts or stops listening; always: listen all the time. */
 export type MicMode = 'hold' | 'toggle' | 'always';
 export type WhisperModel = 'base-q5_1' | 'small-q5_1' | 'large-v3-turbo-q5_0';
+/** system: the recognizer Windows ships (nothing to download); whisper: whisper.cpp or any service at `baseUrl`; auto: system on Windows, whisper elsewhere. */
+export type AsrEngine = 'auto' | 'system' | 'whisper';
 
 export interface DesktopPetConfigSection extends WorldSection {
   /** Local server for the pet page, the dressing page and the pet window's socket. */
@@ -47,6 +49,7 @@ export interface DesktopPetConfigSection extends WorldSection {
   };
   asr: {
     enabled: boolean;
+    engine: AsrEngine;
     /** Transcription endpoint (OpenAI-compatible `/audio/transcriptions`); the managed whisper.cpp server listens here. */
     baseUrl: string;
     /** Start the managed whisper.cpp server when nothing answers at `baseUrl`. */
@@ -87,6 +90,7 @@ export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
   touch: { enabled: true, trigger: 'debounce' },
   asr: {
     enabled: true,
+    engine: 'auto',
     baseUrl: 'http://127.0.0.1:8794/v1',
     manageServer: true,
     model: 'small-q5_1',
@@ -131,8 +135,9 @@ export const DESKTOP_PET_ASR_CONFIG_GROUP: ConfigGroup = {
     type: 'object',
     title: '语音输入',
     properties: {
-      [`${K}.asr.enabled`]: { type: 'boolean', title: '听麦克风', 'x-hot': true },
-      [`${K}.asr.model`]: { type: 'string', title: '识别模型', enum: ['base-q5_1', 'small-q5_1', 'large-v3-turbo-q5_0'], description: 'base 57 MB 快;small 181 MB 中文更准;turbo 547 MB 最准也最慢。换了要重启识别服务。', 'x-hot': false },
+      [`${K}.asr.enabled`]: { type: 'boolean', title: '语音输入总开关', 'x-hot': true },
+      [`${K}.asr.engine`]: { type: 'string', title: '识别引擎', enum: ['auto', 'system', 'whisper'], description: 'system 用 Windows 自带的语音识别,不用下载;whisper 用 whisper.cpp(要下载程序和模型)或识别端点上的服务,更准;auto 在 Windows 上用 system,其他系统用 whisper。', 'x-hot': true },
+      [`${K}.asr.model`]: { type: 'string', title: 'whisper 识别模型', enum: ['base-q5_1', 'small-q5_1', 'large-v3-turbo-q5_0'], description: 'base 57 MB 快;small 181 MB 中文更准;turbo 547 MB 最准也最慢。换了要重启识别服务。', 'x-hot': false },
       [`${K}.asr.language`]: { type: 'string', title: '语言', description: 'ISO 639-1,auto 让模型自己判断。', 'x-hot': true },
       [`${K}.asr.baseUrl`]: { type: 'string', title: '识别端点', description: 'OpenAI 兼容的 /audio/transcriptions 所在的 /v1。', 'x-hot': false },
       [`${K}.asr.manageServer`]: { type: 'boolean', title: '托管 whisper.cpp 服务', description: '端点没有服务在跑时自己启动一个。', 'x-hot': false },

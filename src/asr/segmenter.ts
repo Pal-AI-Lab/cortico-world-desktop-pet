@@ -22,6 +22,8 @@
  * 静音之外还想多等多久",默认 0。流水线空闲后，`maxHoldMs` 到期的批次立即发车。
  */
 
+import type { TranscribeResult } from './client.ts';
+
 /** 一句:16-bit 单声道 PCM,附上它在流里的位置 */
 export interface Utterance {
   pcm: Int16Array;
@@ -30,6 +32,19 @@ export interface Utterance {
   durationMs: number;
   /** 因为说得太长被强切的,而不是自然收尾的 */
   forced: boolean;
+  /** 边说边识别的引擎已经在听这一句:它的识别结果,不必再整句送一遍 */
+  result?: Promise<TranscribeResult>;
+}
+
+/**
+ * 边说边识别的引擎从这里接音频:一句开头(连同门限之前那几帧)、之后的每一帧、这一句收尾。
+ * 切句的判据不变,它只是早一点拿到同样的帧。
+ */
+export interface SegmentSink {
+  begin(frames: Int16Array[]): void;
+  frame(frame: Int16Array): void;
+  /** `kept` 为 false:太短、不算一句。返回的结果挂到这一句的 `result` 上 */
+  end(kept: boolean): Promise<TranscribeResult> | undefined;
 }
 
 export interface SegmentConfig {
@@ -99,10 +114,16 @@ export class Segmenter {
   private elapsedMs = 0;
   private startMs = 0;
   private lastDb = -100;
+  private sink: SegmentSink | null = null;
 
   constructor(cfg: SegmentConfig, frameMs: number) {
     this.cfg = cfg;
     this.frameMs = frameMs;
+  }
+
+  /** 边说边识别的引擎;null = 只在收尾时交整句 */
+  setSink(sink: SegmentSink | null): void {
+    this.sink = sink;
   }
 
   /** 热改:门槛与时长随时可调,不打断正在收的这一句 */
@@ -157,11 +178,13 @@ export class Segmenter {
         this.collected = [...this.preRoll];
         this.startMs = this.elapsedMs - this.collected.length * this.frameMs;
         this.preRoll = [];
+        this.sink?.begin(this.collected);
       }
       return out;
     }
 
     this.collected.push(frame);
+    this.sink?.frame(frame);
     this.belowMs = loud ? 0 : this.belowMs + this.frameMs;
     const heldMs = this.collected.length * this.frameMs;
     // 短门限交货;长门限那一半留给 settleRemainingMs,不在这里挡。给反了(短的比长的
@@ -179,6 +202,7 @@ export class Segmenter {
       this.collected = [];
       this.startMs = this.elapsedMs;
       this.belowMs = 0;
+      this.sink?.begin([]);
     }
     return out;
   }
@@ -198,8 +222,10 @@ export class Segmenter {
     this.speaking = false;
     this.aboveMs = 0;
     const durationMs = frames.length * this.frameMs;
-    if (durationMs < this.cfg.minUtteranceMs) return null;
-    return { pcm: concat(frames), startMs: this.startMs, durationMs, forced };
+    const kept = durationMs >= this.cfg.minUtteranceMs;
+    const result = this.sink?.end(kept);
+    if (!kept) return null;
+    return { pcm: concat(frames), startMs: this.startMs, durationMs, forced, ...(result ? { result } : {}) };
   }
 }
 

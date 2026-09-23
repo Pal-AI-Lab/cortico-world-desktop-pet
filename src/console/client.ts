@@ -1,6 +1,7 @@
 /**
  * Console panels for the desktop pet: `pet` (window, dressing, window runtime) and `voice`
- * (whisper.cpp server, model downloads, microphone level, recognized lines). Data goes
+ * (recognition engine, whisper.cpp downloads when that engine is chosen, microphone level,
+ * recognized lines). Data goes
  * through `ctx.invoke`, the level meter through `ctx.stream('voice')`.
  */
 import type { ConsoleClientBundle, ConsolePanel, ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
@@ -17,6 +18,10 @@ interface PetState {
 }
 interface VoiceState {
   enabled: boolean;
+  /** The engine in force, and the setting it came from */
+  engine: 'system' | 'whisper';
+  engineSetting: Engine;
+  systemSupported: boolean;
   model: string;
   server: { phase: string; url: string; pid: number | null; detail: string | null } | null;
   runtime: Artifact & { supported: boolean };
@@ -41,6 +46,7 @@ interface VoiceState {
 }
 
 type MicMode = 'hold' | 'toggle' | 'always';
+type Engine = 'auto' | 'system' | 'whisper';
 const MODES: Record<MicMode, string> = { hold: '按住说话键时收音', toggle: '按一下说话键开始,再按一下停', always: '一直收音' };
 
 /** `KeyboardEvent.code` → the key names `src/asr/hotkey.ts` reads. */
@@ -150,9 +156,22 @@ const voicePanel: ConsolePanel = {
     const s = card.body;
     const msg = ui.msgline('');
 
-    const enabled = ui.checkbox('听麦克风', { onChange: (on: boolean) => void call('setEnabled', [on])() });
-    const bar = ui.rowbar();
-    bar.append(enabled.el, msg);
+    // The master switch: everything below only works while it is on.
+    const master = ui.h('label', 'pet-master');
+    const masterText = ui.h('span', 'pet-mastertext');
+    const masterTitle = ui.h('span', 'pet-mastertitle', '开启语音输入');
+    const masterHint = ui.h('span', 'pet-masterhint');
+    masterText.append(masterTitle, masterHint);
+    const enabled = ui.h('input', 'pet-switch');
+    enabled.type = 'checkbox';
+    enabled.setAttribute('role', 'switch');
+    enabled.addEventListener('change', () => void call('setEnabled', [enabled.checked])());
+    master.append(masterText, enabled);
+    const settings = ui.h('div', 'pet-voicebody');
+
+    const eng = statusRow(ctx, '识别引擎');
+    const engineSel = ui.select();
+    eng.acts.append(engineSel);
 
     const srv = statusRow(ctx, '识别服务');
     const btnStart = ui.button('启动', { size: 'sm', variant: 'primary' });
@@ -180,16 +199,34 @@ const voicePanel: ConsolePanel = {
     meter.append(fill, mark);
 
     const log = ui.log({ max: 100 });
-    s.append(bar, srv.row, rt.row, micRow.row, modeRow.row, meter, ui.section('识别结果', '划掉的是太短或疑似幻觉、没有发出去的'), log.el);
+    settings.append(eng.row, srv.row, rt.row, micRow.row, modeRow.row, meter, ui.section('识别结果', '划掉的是太短或疑似幻觉、没有发出去的'), log.el);
+    s.append(master, msg, settings);
 
     let st: VoiceState | null = null;
     let seen = 0;
     const render = (next: VoiceState) => {
       st = next;
-      enabled.setChecked(next.enabled);
+      enabled.checked = next.enabled;
+      master.classList.toggle('on', next.enabled);
+      masterHint.textContent = next.enabled
+        ? '已开启:麦克风一直打开,按下面的收音方式把说的话发给桌宠'
+        : '已关闭:不打开麦克风,下面的设置暂不生效';
+      settings.classList.toggle('off', !next.enabled);
+      const engines: Record<Engine, string> = {
+        auto: `自动(${next.systemSupported ? 'Windows 自带' : 'whisper.cpp'})`,
+        system: next.systemSupported ? 'Windows 自带' : 'Windows 自带(本系统没有)',
+        whisper: 'whisper.cpp',
+      };
+      if (engineSel.dataset.list !== JSON.stringify(engines)) {
+        engineSel.dataset.list = JSON.stringify(engines);
+        engineSel.replaceChildren(...(Object.keys(engines) as Engine[]).map((k) => { const o = ui.h('option', null, engines[k]); o.value = k; return o; }));
+      }
+      if (document.activeElement !== engineSel) engineSel.value = next.engineSetting;
+      eng.set(next.engine === 'system' ? 'Windows 自带' : 'whisper.cpp', 'on',
+        next.engine === 'system' ? '不用下载,开箱即用;想要更准可以换 whisper.cpp' : '要下载识别程序和模型,中文更准');
       const sv = next.server;
       if (!sv) srv.set('—', 'off');
-      else if (sv.phase === 'running') srv.set('运行中', 'on', sv.url);
+      else if (sv.phase === 'running') srv.set(next.engine === 'system' ? '就绪' : '运行中', 'on', sv.url);
       else if (sv.phase === 'external') srv.set('外部服务', 'on', sv.url);
       else if (sv.phase === 'starting') srv.set('启动中', 'busy', sv.url);
       else if (sv.phase === 'error') srv.set('出错', 'bad', sv.detail ?? '');
@@ -210,6 +247,8 @@ const voicePanel: ConsolePanel = {
       else rt.set(r.supported ? '缺文件' : '本平台没有预编译包', 'off', r.supported ? [r.phase !== 'ready' ? '程序 8 MB' : '', m?.phase !== 'ready' ? `模型 ${MB(m?.bytes ?? 0)}` : ''].filter(Boolean).join(' + ') : '在配置里指定 whisper-server 程序');
       btnInstall.disabled = busy;
       btnInstall.hidden = r.phase === 'ready' && m?.phase === 'ready';
+      // the download only matters to whisper
+      rt.row.style.display = next.engine === 'whisper' ? '' : 'none';
 
       const mic = next.mic;
       micRow.set({ on: '收音中', off: '没在收', denied: '被拒绝', error: '出错' }[mic.state] ?? mic.state, mic.state === 'on' ? 'on' : mic.state === 'off' ? 'off' : 'bad', mic.detail ?? '');
@@ -240,6 +279,7 @@ const voicePanel: ConsolePanel = {
       try { render(await ctx.invoke<VoiceState>(method, args)); msg.textContent = ''; } catch (err) { msg.textContent = errText(err); }
     };
     btnStart.addEventListener('click', call('start'));
+    engineSel.addEventListener('change', () => void call('setEngine', [engineSel.value])());
     btnStop.addEventListener('click', call('stop'));
     btnInstall.addEventListener('click', () => void call('install', [modelSel.value])());
     modeSel.addEventListener('change', () => void call('setMic', [{ mode: modeSel.value }])());

@@ -142,4 +142,17 @@ body.desk .floor{display:none}
 }
 .tool:hover{color:var(--skin-eye); border-color:var(--skin-eye)}
 .tool svg{width:18px; height:18px; display:block}
-@media (prefers-reduced-motion: reduce){.bubble.pop, .b-opt, .b-own, .trail i, .caret, .menu, .tools{animation:none}}
+/* the voice switch: struck through when off, faded while the recognizer is not ready, lit while hearing */
+.tool{position:relative}
+.tool.off{color:var(--muted)}
+.tool.waiting svg{opacity:.45}
+.tool.live{color:var(--skin-eye); border-color:var(--skin-eye)}
+/* held down: a ring closes in; when it is full the sentence is sent */
+.tool.holding::after{
+  content:""; position:absolute; inset:-7px; border-radius:50%; border:2.5px solid var(--skin-eye); pointer-events:none;
+  animation:hold-ring var(--hold, .5s) linear forwards;
+}
+@keyframes hold-ring{from{transform:scale(.72); opacity:0} to{transform:scale(1); opacity:1}}
+.tool.sent{animation:tool-sent .36s cubic-bezier(.3,1.5,.5,1)}
+@keyframes tool-sent{45%{transform:scale(1.2)}}
+@media (prefers-reduced-motion: reduce){.bubble.pop, .b-opt, .b-own, .trail i, .caret, .menu, .tools, .tool.holding::after, .tool.sent{animation:none}}

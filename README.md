@@ -11,7 +11,7 @@
 [CortiCompanion](https://github.com/Pal-AI-Lab/CortiCompanion) 桌面上的 Coo 就是它。
 
 bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两条短腿。它用气泡说话、用选项提问、
-沿任务栏走动、做表情和动作;人可以对它说话(内置 whisper.cpp 识别)、打字、点选项、戳它、摸它、
+沿任务栏走动、做表情和动作;人可以对它说话(默认用 Windows 自带的语音识别,也可换成 whisper.cpp)、打字、点选项、戳它、摸它、
 把它拎起来甩出去,这些都作为事件送回 bot。
 
 ## 工具
@@ -30,7 +30,7 @@ bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两�
 | `type` | 正文 | 投递 |
 |---|---|---|
 | `desktop-pet.speech` | `[语音] 主人:…` | flush |
-| `desktop-pet.message` | `[打字] 主人:…`(右键「说点什么」、双击或悬停按钮) | flush |
+| `desktop-pet.message` | `[打字] 主人:…`(双击或悬停按钮) | flush |
 | `desktop-pet.answer` | `[回答] 主人回答「问题」:选了第 2 项「…」` / 自己写的 / 关掉没答 | flush,关掉没答为 debounce |
 | `desktop-pet.touch` | `[互动] 主人戳了你 3 下` / 摸了摸 / 拎起来甩了出去 / 摔晕 | `worlds.desktop-pet.touch.trigger`,默认 debounce |
 
@@ -41,10 +41,14 @@ bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两�
 World 在 `127.0.0.1:7797`(被占向上顺延)起一个页面服务:`/pet` 是桌宠本身,`/dress` 是装扮页。
 桌宠窗口是一个 Electron 进程(`host/electron-main.cjs`):透明、无边框、置顶,盖住主屏幕的工作区,
 鼠标只在身体、气泡、右键菜单和悬停按钮上时才接收点击,其余位置点击穿透。托盘图标可以显示、隐藏、关闭它。
-鼠标停在桌宠身上时,身旁出现两个按钮:打字说话、切换黑白模式。窗口打开时桌宠从屏幕顶上掉到底边。
+鼠标停在桌宠身上时,身旁出现两个按钮:打字说话;语音输入开关(点一下开关 `asr.enabled`,
+正在听时长按半秒把听到的这句话立刻送出,不等停顿;按 toggle 方式开着的说话键同时关上)。黑白模式在右键菜单里切换。窗口打开时桌宠从屏幕顶上掉到底边。
 右键菜单顶上一行是 bot 的头像(部署目录的 `avatar.png`,没有时画桌宠自己)和名字;内嵌应用借出运行控制时,
 旁边还有暂停/继续、退出按钮,最下面多一行「打开设置」。点退出先在这一行问一次,菜单宽度不变。
 「行为模式」展开二级菜单选常走动、多待着、不乱动。
+提问气泡的选项出来时,窗口把键盘从前台窗口那里接过来(Windows 不让后台进程直接抢前台,
+所以借 `AttachThreadInput` 与前台线程共享一次输入),按 1–9(主键盘或小键盘)选对应的选项;
+答完、关掉或被新问题替换时还给原来那个窗口,期间人点了别处就不还。
 World 进程退出后窗口在 2 秒内自己关掉。
 桌宠身后的屏幕颜色和身体相近时(比如浅色身体停在白色窗口前),身体背后会亮起一圈浅灰色的柔光:
 Windows 上每 0.8 秒用 GDI 取一小块身体周围的屏幕像素来比,其他系统读屏代价大,光圈一直亮着。
@@ -66,11 +70,26 @@ Windows 上每 0.8 秒用 GDI 取一小块身体周围的屏幕像素来比,其�
 ## 语音输入
 
 桌宠窗口里的页面用麦克风收音,16 kHz 单声道 PCM 经 WebSocket 送到 World,按能量门限切句
-(`src/asr/segmenter.ts`),交给 OpenAI 兼容的 `/v1/audio/transcriptions` 识别,繁体转简体、
-挡掉已知幻觉后作为 `desktop-pet.speech` 投递。说话时桌宠歪头倾听,虚线气泡里显示听到的字。
+(`src/asr/segmenter.ts`),交给识别引擎,繁体转简体、挡掉已知幻觉后作为 `desktop-pet.speech` 投递。
+说话时桌宠歪头倾听,虚线气泡里显示听到的字:用 `system` 引擎时边说边出字,还没定下来的部分是灰色的;
+whisper 每句说完才出字。
 
-识别端点上已经有服务在跑就直接用;没有且 `asr.manageServer` 开着,World 自己启动 whisper.cpp 的
-`whisper-server`。「语音输入」面板负责下载:
+识别引擎存在 `asr.engine`:
+
+| `asr.engine` | 引擎 |
+|---|---|
+| `auto`(默认) | Windows 上用 `system`,其他系统用 `whisper` |
+| `system` | Windows 自带的语音识别(SAPI 听写,System.Speech),不用下载 |
+| `whisper` | OpenAI 兼容的 `/v1/audio/transcriptions`,通常是 whisper.cpp,更准 |
+
+`system` 起一个常驻的 PowerShell 进程(`src/asr/system-sapi.ps1`,经 `-EncodedCommand` 传入,不受执行策略影响),
+一句话边说边送:切句器判定开口后(连同门限之前那几帧)每帧一行 base64 PCM 送进去,
+进程约每 0.4 秒回报一次这句到目前为止的文字(`listen` 的 `partial` 带上 `interim`),一句收尾后几十毫秒内定稿,不必再整句识别一遍。
+按 `asr.language` 挑系统里装着的识别器。中文 Windows 自带 zh-CN 识别器;
+没有时面板写明去 Windows 设置 → 时间和语言 → 语言里装「语音识别」。
+
+`whisper`:识别端点上已经有服务在跑就直接用;没有且 `asr.manageServer` 开着,World 自己启动 whisper.cpp 的
+`whisper-server`。「语音输入」面板选了 whisper.cpp 才显示下载(点「下载并启动」也会把引擎换成 whisper):
 
 - 程序:whisper.cpp `b5130` 的发布包(Windows x64 CPU 版 8.6 MB;Linux 用 ubuntu 包),解到
   `<运行时根>/whisper.cpp/b5130/`。macOS 没有预编译包,用 `brew install whisper-cpp` 后把
@@ -91,7 +110,7 @@ Windows 上每 0.8 秒用 GDI 取一小块身体周围的屏幕像素来比,其�
 说话键 `asr.mic.hotkey` 默认 `RightCtrl`,用 `+` 连写组合键(`Ctrl+Space`、`F8`、`Mouse4`),在哪个窗口里按都算。
 它经 koffi 轮询 Win32 `GetAsyncKeyState` 读取,只在 Windows 上可用;读不到时退回 `always`,面板上写明原因。
 `asr.mic.deviceId` 选麦克风,留空用系统默认;设备列表由桌宠页在拿到麦克风权限后报上来。
-麦克风在「听麦克风」开着时一直打开,电平条随时显示音量,说话键只决定哪一段送去识别。
+麦克风在「开启语音输入」总开关开着时一直打开,电平条随时显示音量,说话键只决定哪一段送去识别。
 
 ## 给内嵌应用
 

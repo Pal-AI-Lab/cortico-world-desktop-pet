@@ -14,6 +14,7 @@ import type { MicMode } from '../src/config.ts';
 import { parseHotkey } from '../src/asr/hotkey.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { FakePage } from './helpers/page.ts';
+import { fakeSapi } from './helpers/fake-sapi.ts';
 
 interface Endpoint { url: string; bodies: string[]; reply: { text: string }; server: Server }
 
@@ -69,6 +70,7 @@ async function setup(text: string, mode: MicMode = 'always', watch?: ReturnType<
   const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
   Object.assign(cfg, { enabled: true, port: 0 });
   cfg.window.enabled = false;
+  cfg.asr.engine = 'whisper';
   cfg.asr.baseUrl = ep.url;
   cfg.asr.mic.mode = mode;
   const dir = mkdtempSync(join(tmpdir(), 'pet-voice-'));
@@ -129,6 +131,70 @@ describe('voice input', () => {
     expect(world.voiceState().input).toMatchObject({ mode: 'hold', effectiveMode: 'always', hotkeyProblem: 'no keyboard here', open: true });
     for (const fr of [...tone(900, .3), ...tone(900, 0)]) page.audio(fr);
     await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+  });
+
+  it('the microphone button held down sends the sentence without waiting for its closing pause', async () => {
+    const { ep, host, page } = await setup('帮我开灯');
+    // speech with no pause after it: the segmenter is still inside the sentence
+    for (const fr of tone(600, .3)) page.audio(fr);
+    await page.next((m) => m.t === 'listen' && m.phase === 'start');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ep.bodies).toHaveLength(0);
+    page.send({ t: 'commit' });
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+    expect(host.events[0].text).toBe('[语音] 主人:帮我开灯');
+    expect((await page.next((m) => m.t === 'listen' && m.phase === 'heard')).text).toBe('帮我开灯');
+  });
+
+  it('toggle: sending the sentence switches the talk key off', async () => {
+    const { key, watch } = scriptedKey();
+    const { host, page, world } = await setup('好了', 'toggle', watch);
+    key.press(true); key.press(false);
+    await page.next((m) => m.t === 'listen' && m.phase === 'start');
+    for (const fr of tone(600, .3)) page.audio(fr);
+    page.send({ t: 'commit' });
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+    expect((world.voiceState().input as { open: boolean }).open).toBe(false);
+  });
+
+  it('the button held down with nothing heard closes the listening bubble and sends nothing', async () => {
+    const { key, watch } = scriptedKey();
+    const { ep, host, page } = await setup('x', 'toggle', watch);
+    key.press(true); key.press(false);
+    await page.next((m) => m.t === 'listen' && m.phase === 'start');
+    page.send({ t: 'commit' });
+    await page.next((m) => m.t === 'listen' && m.phase === 'none');
+    expect(ep.bodies).toHaveLength(0);
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('system engine: the bubble shows the sentence while it is spoken, then the event carries the final text', async () => {
+    const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
+    Object.assign(cfg, { enabled: true, port: 0 });
+    cfg.window.enabled = false;
+    cfg.asr.engine = 'system';
+    cfg.asr.mic.mode = 'always';
+    // one character per 100 ms of audio heard so far; the final text settles on the whole sentence
+    const { spawnImpl, spawned } = fakeSapi({ partial: (n) => '听'.repeat(Math.floor(n / 3200)) || null, final: () => '听清楚了' });
+    const dir = mkdtempSync(join(tmpdir(), 'pet-voice-'));
+    const world = new DesktopPetWorld({ cfg, timezone: 'Asia/Shanghai', persist: () => {}, runtimesRoot: () => join(dir, 'rt'), modelsDir: () => join(dir, 'm'), spawnSystemRecognizer: spawnImpl });
+    const host = new FakeHost();
+    await world.start(host);
+    cleanup.push(() => world.stop());
+    await expect.poll(() => (world.voiceState().server as { phase: string }).phase).toBe('running');
+    const page = await FakePage.open(world.petUrl.replace(/\/pet$/, ''));
+    cleanup.push(() => page.close());
+
+    for (const fr of tone(600, .3)) page.audio(fr);
+    const live = await page.next((m) => m.t === 'listen' && m.phase === 'partial' && typeof m.interim === 'string' && m.interim.length >= 3);
+    expect(live.text).toBe('');
+    expect(host.events).toHaveLength(0);
+    for (const fr of tone(900, 0)) page.audio(fr);
+    await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
+    expect(host.events[0].text).toBe('[语音] 主人:听清楚了');
+    expect((await page.next((m) => m.t === 'listen' && m.phase === 'heard')).text).toBe('听清楚了');
+    // one streamed sentence, not a second pass over the finished audio
+    expect(spawned[0].lines.filter((l) => l.startsWith('B '))).toHaveLength(1);
   });
 
   it('ignores quiet input', async () => {

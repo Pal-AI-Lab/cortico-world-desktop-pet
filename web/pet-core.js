@@ -350,6 +350,9 @@ export const ICONS = {
     return `${i ? 'L' : 'M'}${f(12 + r * Math.cos(a))} ${f(12 + r * Math.sin(a))}`;
   }).join('')}Z"/><circle cx="12" cy="12" r="3"/>`),
   power: icon('<path d="M12 3.5v8M7.2 6.3a8 8 0 1 0 9.6 0"/>'),
+  mic: icon('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3"/>'),
+  // the same microphone struck through
+  micOff: icon('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3M4 4l16 16"/>'),
 };
 /** Sets `theme` ('dark' | 'light') on the page; `button`, when given, shows the mode a click switches to. */
 export function applyTheme(theme, button) {
