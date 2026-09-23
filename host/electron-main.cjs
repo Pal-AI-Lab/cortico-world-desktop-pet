@@ -6,7 +6,7 @@
  * the window closes once that process exits. The window covers the primary
  * display's work area, is transparent and always on top, and ignores the mouse until the
  * page reports the pointer is over the figure, a bubble or the menu. A tray icon shows,
- * hides and closes it.
+ * hides and closes it; an embedding app that has its own tray passes `tray: false`.
  */
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, session, shell } = require('electron');
 const { join } = require('node:path');
@@ -28,7 +28,7 @@ function trayIcon() {
   return nativeImage.createFromBitmap(buf, { width: n, height: n });
 }
 
-function runPetHost({ url, parentPid = 0 }) {
+function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
   if (!url) throw new Error('pet host needs --pet-url');
   const origin = new URL(url).origin;
   let win = null, tray = null, dress = null;
@@ -88,6 +88,7 @@ function runPetHost({ url, parentPid = 0 }) {
     screen.on('display-metrics-changed', place);
     screen.on('display-added', place);
     screen.on('display-removed', place);
+    if (!withTray) return;
     tray = new Tray(trayIcon());
     tray.setToolTip('Cortico 桌宠');
     tray.setContextMenu(Menu.buildFromTemplate([
