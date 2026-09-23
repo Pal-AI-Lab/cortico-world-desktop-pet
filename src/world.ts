@@ -1002,6 +1002,7 @@ export class DesktopPetWorld implements World {
       connected: this.server.petConnected,
       url: this.server.port ? this.petUrl : null,
       dressUrl: this.server.port ? `${this.server.origin}/dress` : null,
+      skin: this.cfg.skin,
       window: this.windowHost?.state() ?? null,
       electron: { ...this.store.electron.state(), supported: this.store.electron.supported },
       screen: this.screen,
