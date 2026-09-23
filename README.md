@@ -1,8 +1,14 @@
-# cortico-world-desktop-pet
+<!-- Owner: src/definition.ts -->
 
-Owner: `src/definition.ts`
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+    <img src="assets/banner.svg" alt="cortico-world-desktop-pet" width="806">
+  </picture>
+</p>
 
-[Cortico](https://github.com/Pal-AI-Lab/Cortico) 的桌宠 World,以独立 npm 包发布。
+[Cortico](https://github.com/Pal-AI-Lab/Cortico) 的桌宠 World,一个独立的扩展包。
+[CortiCompanion](https://github.com/Pal-AI-Lab/CortiCompanion) 桌面上的 Coo 就是它。
 
 bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两条短腿。它用气泡说话、用选项提问、
 沿任务栏走动、做表情和动作;人可以对它说话(内置 whisper.cpp 识别)、打字、点选项、戳它、摸它、
@@ -71,8 +77,7 @@ corepack pnpm install
 corepack pnpm build        # 面板产物 dist/,不进版本库
 ```
 
-然后在 Cortico 控制台「扩展」页安装(填本目录绝对路径,或 npm 包名 `cortico-world-desktop-pet`),
-整进程重启。bot 的 `declares` 里加上 `desktop-pet`,或在「World 总览」启用它。
+然后在 Cortico 控制台「扩展」页安装(填本目录的绝对路径),整进程重启。bot 的 `declares` 里加上 `desktop-pet`,或在「World 总览」启用它。
 
 ## 开发
 
