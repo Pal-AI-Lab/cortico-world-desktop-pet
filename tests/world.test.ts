@@ -204,6 +204,23 @@ describe('with a pet page', () => {
     expect(tab.messages.some((m) => m.t === 'act')).toBe(false);
   });
 
+  it('a watching tab still sends typed text and a theme switch, which reaches the pet window', async () => {
+    const { world, host, persisted } = await mounted();
+    const win = await FakePage.open(origin(world), 'role=pet&host=window');
+    cleanup.push(() => win.close());
+    const tab = await FakePage.open(origin(world), 'role=pet&host=tab');
+    cleanup.push(() => tab.close());
+    await tab.next((m) => m.t === 'watching');
+    tab.send({ t: 'text', text: 'hi' });
+    await expect.poll(() => host.events.length).toBe(1);
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.message', text: '[打字] 主人:hi' });
+    const theme = DESKTOP_PET_DEFAULTS.theme === 'dark' ? 'light' : 'dark';
+    tab.send({ t: 'prefs', theme });
+    expect((await win.next((m) => m.t === 'prefs')).theme).toBe(theme);
+    expect(persisted).toContainEqual({ theme });
+    expect((await (await fetch(`${origin(world)}/api/state`)).json()).theme).toBe(theme);
+  });
+
   it('rejects requests whose Host is not a loopback name', async () => {
     const { world } = await mounted();
     const url = new URL(origin(world));

@@ -99,8 +99,7 @@ const petPanel: ConsolePanel = {
       if (next.url) open.href = next.url;
       if (next.dressUrl && frame.dataset.src !== next.dressUrl) {
         frame.dataset.src = next.dressUrl;
-        const theme = document.documentElement.dataset.theme;
-        frame.src = next.dressUrl + (theme ? `?theme=${encodeURIComponent(theme)}` : '');
+        frame.src = next.dressUrl;
       }
     };
     const refresh = async () => { try { render(await ctx.invoke<PetState>('state')); } catch (err) { msg.textContent = errText(err); } };

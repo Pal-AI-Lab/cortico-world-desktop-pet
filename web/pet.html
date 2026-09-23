@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,6 +19,10 @@
 <div class="bubble heard" id="heard" role="status" aria-live="polite" hidden></div>
 <div class="bubble" id="bubble" role="status" aria-live="polite" hidden></div>
 <div class="menu" id="menu" role="menu" hidden></div>
+<div class="tools" id="tools" hidden>
+  <button class="tool" id="toolChat" type="button" title="说点什么" aria-label="说点什么"></button>
+  <button class="tool" id="toolTheme" type="button"></button>
+</div>
 <script type="module" src="/web/pet-app.js"></script>
 </body>
 </html>

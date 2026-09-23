@@ -16,6 +16,8 @@ export interface PetSkin {
 }
 
 export type RoamMode = 'free' | 'calm' | 'off';
+/** Which side of each palette the pet pages draw: dark = light figure for dark surroundings. */
+export type PetTheme = 'dark' | 'light';
 export type TouchTrigger = 'debounce' | 'piggyback';
 export type WhisperModel = 'base-q5_1' | 'small-q5_1' | 'large-v3-turbo-q5_0';
 
@@ -34,6 +36,7 @@ export interface DesktopPetConfigSection extends WorldSection {
   };
   roam: RoamMode;
   sound: boolean;
+  theme: PetTheme;
   skin: PetSkin;
   touch: {
     /** Clicks, petting and throws become events. */
@@ -67,6 +70,7 @@ export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
   window: { enabled: true, electronFile: '', scale: 1 },
   roam: 'calm',
   sound: true,
+  theme: 'dark',
   skin: {
     palette: 'mint', head: 'none', side: 'none', glasses: 'none', neck: 'none',
     colors: { head: { main: 'body', acc: 'eye' }, side: { main: 'eye', acc: 'eye' }, glasses: { main: 'body', acc: 'eye' }, neck: { main: 'eye', acc: 'eye' } },
@@ -99,6 +103,7 @@ export const DESKTOP_PET_CONFIG_GROUP: ConfigGroup = {
       [`${K}.user`]: { type: 'string', title: '怎么称呼你', description: '语音、打字和互动事件里用这个名字指代你。', 'x-hot': true },
       [`${K}.roam`]: { type: 'string', title: '自由活动', enum: ['free', 'calm', 'off'], description: 'free 常走动;calm 多待着;off 只做被要求的动作。', 'x-hot': true },
       [`${K}.sound`]: { type: 'boolean', title: '音效', 'x-hot': true },
+      [`${K}.theme`]: { type: 'string', title: '黑白模式', enum: ['dark', 'light'], description: 'dark 夜间:浅色身体、深色气泡;light 白天:深色身体、浅色气泡。', 'x-hot': true },
       [`${K}.window.enabled`]: { type: 'boolean', title: '启动时打开桌宠窗口', 'x-hot': false },
       [`${K}.window.scale`]: { type: 'number', title: '大小', minimum: .5, maximum: 2, multipleOf: .05, 'x-hot': true },
       [`${K}.window.electronFile`]: { type: 'string', title: 'Electron 程序', description: '留空时依次用 CORTICO_DESKTOP_PET_HOST 和面板里安装的运行时。', 'x-path': { kind: 'file' }, 'x-hot': false },

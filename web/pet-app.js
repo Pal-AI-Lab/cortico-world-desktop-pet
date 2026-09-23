@@ -5,9 +5,10 @@
  * microphone audio while voice input is on.
  *
  * In the pet window (`window.petHost` from the preload) the page is transparent and the
- * window ignores the mouse except over the figure, a bubble or the menu.
+ * window ignores the mouse except over the figure, a bubble, the menu or the hover buttons.
+ * Colors follow the World's `theme` through `data-theme` on the root element.
  */
-import { createPet, createSfx, clamp, f, normalizeSkin, skinCss, EXPRESSIONS } from './pet-core.js';
+import { applyTheme, createPet, createSfx, clamp, f, normalizeSkin, skinCss, EXPRESSIONS, ICONS } from './pet-core.js';
 
 const $ = (s) => document.querySelector(s);
 const host = window.petHost || null;
@@ -15,10 +16,11 @@ document.body.classList.add(host ? 'desk' : 'tab');
 
 const stage = $('#stage');
 const bubble = $('#bubble'), heardEl = $('#heard'), trail = $('#trail'), menu = $('#menu');
+const tools = $('#tools'), toolChat = $('#toolChat'), toolTheme = $('#toolTheme');
 const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
 
-const prefs = { roam: 'calm', sound: true, scale: 1, user: '主人', mic: false };
+const prefs = { roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false };
 const sfx = createSfx();
 if (host) sfx.unlock();
 else ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => sfx.unlock(), { capture: true }));
@@ -58,6 +60,7 @@ function applyPrefs(p) {
   if (p.skin) { const s = normalizeSkin(p.skin); ctl.setSkin(s); skinStyle.textContent = skinCss(s); }
   if (p.roam) { prefs.roam = p.roam; ctl.setRoam(p.roam); }
   if (typeof p.sound === 'boolean') { prefs.sound = p.sound; sfx.set(p.sound); }
+  if (p.theme === 'dark' || p.theme === 'light') { prefs.theme = p.theme; applyTheme(p.theme, toolTheme); }
   if (typeof p.scale === 'number') { prefs.scale = p.scale; ctl.resize(); }
   if (typeof p.user === 'string') prefs.user = p.user;
   if (typeof p.mic === 'boolean') { prefs.mic = p.mic; p.mic && !watching ? startMic() : stopMic(); }
@@ -374,6 +377,23 @@ function openMenu(x, y) {
 }
 function closeMenu() { menu.hidden = true; }
 
+/* ---------- hover buttons: type a line, switch dark/light ---------- */
+/** Seconds the buttons stay after the pointer leaves both the pet and them. */
+const TOOLS_LINGER = .8;
+let toolsUntil = 0;
+toolChat.innerHTML = ICONS.chat;
+applyTheme(prefs.theme, toolTheme);
+toolChat.addEventListener('click', () => { toolsUntil = 0; openInput(); });
+toolTheme.addEventListener('click', () => {
+  const theme = prefs.theme === 'dark' ? 'light' : 'dark';
+  applyPrefs({ theme });
+  send({ t: 'prefs', theme });
+  sfx.tick();
+});
+function stepTools() {
+  tools.hidden = !(ctl.time < toolsUntil && !ctl.pressing && !ctl.busy() && menu.hidden);
+}
+
 /* ---------- pointer ---------- */
 let pointerSeen = false;
 const lastPointer = { x: 0, y: 0 };
@@ -383,14 +403,16 @@ function setInteractive(on) {
   interactive = on;
   host.setInteractive(on);
 }
-const overUi = (e) => e.target.closest && e.target.closest('.bubble:not([hidden]), .menu:not([hidden])');
+const overUi = (e) => e.target.closest && e.target.closest('.bubble:not([hidden]), .menu:not([hidden]), .tools:not([hidden])');
 document.addEventListener('pointermove', (e) => {
   pointerSeen = true;
   lastPointer.x = e.clientX; lastPointer.y = e.clientY;
   const p = { x: e.clientX, y: e.clientY };
   const cursor = ctl.pointerMove(p);
   stage.style.cursor = cursor;
-  setInteractive(ctl.pressing || ctl.hitPet(p) || !!overUi(e));
+  const overPet = ctl.hitPet(p);
+  if (overPet || (e.target.closest && e.target.closest('.tools'))) toolsUntil = ctl.time + TOOLS_LINGER;
+  setInteractive(ctl.pressing || overPet || !!overUi(e));
 });
 stage.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
@@ -432,7 +454,16 @@ function place(el, a, extraUp, side) {
   el.style.setProperty('--tail', f(clamp(a.x - left, 22, bw - 22)) + 'px');
   return { left, top, bw, bh };
 }
+/** Beside the body, on the right unless that runs off the screen. */
+function placeTools() {
+  const c = ctl.toStage(128, 128 + ctl.pet.low), reach = 104 * ctl.bounds.S + 10;
+  const w = tools.offsetWidth, h = tools.offsetHeight;
+  const left = c.x + reach + w <= innerWidth - 8 ? c.x + reach : c.x - reach - w;
+  tools.style.left = f(clamp(left, 8, innerWidth - w - 8)) + 'px';
+  tools.style.top = f(clamp(c.y - h / 2, 8, innerHeight - h - 8)) + 'px';
+}
 function layout() {
+  if (!tools.hidden) placeTools();
   const a = ctl.anchor();
   let sayBox = null;
   if (!bubble.hidden) sayBox = place(bubble, a, 18, 0);
@@ -458,6 +489,7 @@ function frame(now) {
   stepListen();
   ctl.step(dt);
   ctl.render();
+  stepTools();
   layout();
   requestAnimationFrame(frame);
 }

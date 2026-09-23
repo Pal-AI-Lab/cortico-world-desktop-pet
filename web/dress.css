@@ -9,6 +9,7 @@ body.dress-page{
   background-color:var(--wall); background-image:radial-gradient(var(--dot) 1.2px, transparent 1.3px); background-size:22px 22px;
 }
 .preview svg{position:absolute; inset:0; width:100%; height:100%}
+.preview .mode{position:absolute; top:10px; right:10px}
 .preview .saved{position:absolute; left:12px; bottom:8px; margin:0; font-size:12.5px; color:var(--muted)}
 .dress{display:grid; grid-template-columns:4.5em 1fr; gap:12px 14px; align-items:start}
 .dress .row-label{font-size:14px; color:var(--muted); padding-top:18px}

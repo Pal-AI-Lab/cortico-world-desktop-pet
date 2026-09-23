@@ -4,10 +4,11 @@
  *
  * - `/pet`: the pet itself. In the pet window it is transparent and click-through outside
  *   the figure; in a browser tab it draws a floor.
- * - `/dress`: the dressing page; changes go through `POST /api/skin`.
+ * - `/dress`: the dressing page; changes go through `POST /api/skin` and `POST /api/prefs`.
  * - `/socket?role=pet|dress&host=window|tab`: one live pet connection plus any number of
  *   pages that only receive skin and preference updates. A newer pet connection replaces the
- *   live one, except that a browser tab only watches while the pet window is connected.
+ *   live one, except that a browser tab only watches while the pet window is connected. A
+ *   watching tab still sends typed text and preference changes.
  *   Binary frames from the pet connection are 16 kHz mono PCM16 microphone audio.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -162,7 +163,13 @@ export class PetServer {
       });
       return;
     }
-    if (params.get('role') === 'pet') ws.send(JSON.stringify({ t: 'watching' }));
+    if (params.get('role') === 'pet') {
+      ws.send(JSON.stringify({ t: 'watching' }));
+      ws.on('message', (data, isBinary) => {
+        const msg = isBinary ? null : parse(data.toString());
+        if (msg && (msg.t === 'text' || msg.t === 'prefs')) this.opts.onPetMessage(msg);
+      });
+    }
     this.dressers.add(ws);
     ws.on('close', () => this.dressers.delete(ws));
   }

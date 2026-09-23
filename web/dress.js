@@ -1,16 +1,15 @@
 /**
  * Dressing page: palette, four accessory slots and their color channels, with a live preview.
- * Every change is saved through `POST /api/skin`; the World persists it and pushes it to the
- * pet window. Changes made elsewhere arrive over `/socket?role=dress`.
+ * Every change is saved through `POST /api/skin` (the dark/light switch through `POST /api/prefs`);
+ * the World persists it and pushes it to the pet window. Changes made elsewhere arrive over
+ * `/socket?role=dress`.
  */
 import {
-  createPet, createSfx, mini, normalizeSkin, skinCss, wear,
+  applyTheme, createPet, createSfx, mini, normalizeSkin, skinCss, wear,
   PALETTES, HEADS, SIDES, GLASSES, NECKS, ACC_COLORS, LINKED, NO_BODY, ROLES,
 } from './pet-core.js';
 
 const $ = (s) => document.querySelector(s);
-const params = new URLSearchParams(location.search);
-if (params.get('theme') === 'dark' || params.get('theme') === 'light') document.documentElement.dataset.theme = params.get('theme');
 
 const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
@@ -18,6 +17,9 @@ const sfx = createSfx({ storageKey: 'cortico-pet.dress-sound.v1', volume: .35 })
 ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => sfx.unlock(), { capture: true }));
 
 let skin = normalizeSkin(null);
+let theme = document.documentElement.dataset.theme;
+const modeBtn = $('#mode');
+applyTheme(theme, modeBtn);
 const preview = $('#preview');
 const ctl = createPet(
   { petG: $('#pet'), shadowEl: $('#shadow'), fxG: $('#fx') },
@@ -33,16 +35,25 @@ preview.addEventListener('pointermove', (e) => { preview.style.cursor = ctl.poin
 preview.addEventListener('pointerup', () => ctl.pointerUp());
 preview.addEventListener('pointerleave', () => ctl.pointerLeave());
 
-function apply(next, save) {
+modeBtn.addEventListener('click', () => {
+  theme = theme === 'dark' ? 'light' : 'dark';
+  applyTheme(theme, modeBtn);
+  sfx.tick();
+  save('/api/prefs', { theme });
+});
+
+function save(path, body) {
+  fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    .then((r) => { $('#saved').textContent = r.ok ? '已保存' : '没保存上'; })
+    .catch(() => { $('#saved').textContent = '没保存上:连不上桌宠服务'; });
+}
+
+function apply(next, persist) {
   skin = next;
   ctl.setSkin(skin);
   skinStyle.textContent = skinCss(skin);
   render();
-  if (save) {
-    fetch('/api/skin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ skin }) })
-      .then((r) => { $('#saved').textContent = r.ok ? '已保存' : '没保存上'; })
-      .catch(() => { $('#saved').textContent = '没保存上:连不上桌宠服务'; });
-  }
+  if (persist) save('/api/skin', { skin });
 }
 
 const CROP = { palette: '18 18 220 220', head: '18 -72 220 220', side: '-52 -4 220 220', glasses: '28 7 220 220', neck: '32 84 220 220' };
@@ -110,6 +121,7 @@ function connect() {
   const ws = new WebSocket(`ws://${location.host}/socket?role=dress`);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
+    if ((m.t === 'init' || m.t === 'prefs') && (m.theme === 'dark' || m.theme === 'light') && m.theme !== theme) { theme = m.theme; applyTheme(theme, modeBtn); }
     if ((m.t === 'init' || m.t === 'prefs') && m.skin && JSON.stringify(normalizeSkin(m.skin)) !== JSON.stringify(skin)) apply(normalizeSkin(m.skin), false);
   };
   ws.onclose = () => setTimeout(connect, 2000);

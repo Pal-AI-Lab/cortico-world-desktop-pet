@@ -336,6 +336,23 @@ export function skinCss(skin, selector = 'html:root') {
     `${selector}[data-theme="dark"]{${skinVars(skin, true)}}`;
 }
 
+/* ---------- the pages' round buttons: icons (24 units, currentColor) and the theme switch ---------- */
+const icon = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+export const ICONS = {
+  chat: icon('<path d="M6 4.5h12a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-6l-4.5 3.5v-3.5H6a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3z"/>'),
+  moon: icon('<path d="M20 14.6A8.2 8.2 0 1 1 9.4 4a6.6 6.6 0 0 0 10.6 10.6z"/>'),
+  sun: icon('<circle cx="12" cy="12" r="4"/><path d="M12 2.8v1.6M12 19.6v1.6M2.8 12h1.6M19.6 12h1.6M5.5 5.5l1.1 1.1M17.4 17.4l1.1 1.1M5.5 18.5l1.1-1.1M17.4 6.6l1.1-1.1"/>'),
+};
+/** Sets `theme` ('dark' | 'light') on the page; `button`, when given, shows the mode a click switches to. */
+export function applyTheme(theme, button) {
+  document.documentElement.dataset.theme = theme;
+  if (!button) return;
+  const toLight = theme === 'dark';
+  button.innerHTML = toLight ? ICONS.sun : ICONS.moon;
+  button.title = toLight ? '切到白天模式' : '切到夜间模式';
+  button.setAttribute('aria-label', button.title);
+}
+
 /* ---------- sound: synthesized with Web Audio, no files ---------- */
 export function createSfx({ storageKey = 'cortico-pet.sound.v1', volume = .55 } = {}) {
   let ctx = null, master = null, unlocked = false, on = true, noiseBuf = null, gainValue = volume;

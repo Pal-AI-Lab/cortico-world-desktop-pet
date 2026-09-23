@@ -21,7 +21,7 @@ import type { Language } from 'cortico/core/language.ts';
 import type { DeepPartial } from 'cortico/world.ts';
 import {
   DESKTOP_PET_ASR_CONFIG_GROUP, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ID,
-  type DesktopPetConfigSection, type PetSkin, type RoamMode, type WhisperModel,
+  type DesktopPetConfigSection, type PetSkin, type PetTheme, type RoamMode, type WhisperModel,
 } from './config.ts';
 import { PetServer, type PageMessage } from './server.ts';
 import { WindowHost, resolveHostCommand } from './window-host.ts';
@@ -204,6 +204,7 @@ export class DesktopPetWorld implements World {
       skin: this.cfg.skin,
       roam: this.cfg.roam,
       sound: this.cfg.sound,
+      theme: this.cfg.theme,
       scale: this.cfg.window.scale,
       user: this.cfg.user,
       mic: this.micWanted(),
@@ -212,7 +213,7 @@ export class DesktopPetWorld implements World {
   }
 
   private prefsSignature(): string {
-    return JSON.stringify([this.cfg.roam, this.cfg.sound, this.cfg.window.scale, this.cfg.user, this.micWanted(), this.cfg.skin]);
+    return JSON.stringify([this.cfg.roam, this.cfg.sound, this.cfg.theme, this.cfg.window.scale, this.cfg.user, this.micWanted(), this.cfg.skin]);
   }
 
   /** Config is a live object edited by the console; changes reach the pages within a second. */
@@ -240,6 +241,7 @@ export class DesktopPetWorld implements World {
     const patch: DeepPartial<DesktopPetConfigSection> = {};
     if (prefs.roam === 'free' || prefs.roam === 'calm' || prefs.roam === 'off') patch.roam = prefs.roam as RoamMode;
     if (typeof prefs.sound === 'boolean') patch.sound = prefs.sound;
+    if (prefs.theme === 'dark' || prefs.theme === 'light') patch.theme = prefs.theme as PetTheme;
     if (typeof prefs.mic === 'boolean') patch.asr = { enabled: prefs.mic };
     if (Object.keys(patch).length) this.opts.persist(patch);
     if (typeof prefs.mic === 'boolean' && prefs.mic && this.cfg.asr.manageServer) void this.startVoiceBackend();
