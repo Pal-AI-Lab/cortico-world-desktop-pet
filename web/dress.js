@@ -9,6 +9,9 @@ import {
   PALETTES, HEADS, SIDES, GLASSES, NECKS, ACC_COLORS, LINKED, NO_BODY, ROLES,
 } from './pet-core.js';
 
+import { bindAppearance } from './appearance.js';
+bindAppearance(document, window);
+
 const $ = (s) => document.querySelector(s);
 
 const skinStyle = document.createElement('style');
