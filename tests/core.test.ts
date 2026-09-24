@@ -6,6 +6,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import type { Bot } from 'cortico/bot.ts';
 import type { CoreConfig } from 'cortico/core/types.ts';
+import { DESKTOP_PET_DEFAULTS } from '../src/config.ts';
 import { DESKTOP_PET } from '../src/definition.ts';
 import type { DesktopPetWorld } from '../src/world.ts';
 import { ScriptedModel, startBot } from './helpers/harness.ts';
@@ -34,7 +35,7 @@ describe('desktop pet through Core', () => {
     });
     bot = await startBot({
       worlds: [DESKTOP_PET as never],
-      sections: { 'desktop-pet': { port: 0, window: { enabled: false, electronFile: '', scale: 1 }, asr: { ...(DESKTOP_PET.defaults() as { asr: object }).asr, enabled: false, mic: { mode: 'always' } } } },
+      sections: { 'desktop-pet': { port: 0, window: { enabled: false, electronFile: '', scale: 1 }, asr: { ...(DESKTOP_PET.defaults() as { asr: object }).asr, enabled: false, mic: { ...DESKTOP_PET_DEFAULTS.asr.mic, mode: 'always' } } } },
       model,
     });
     const world = bot.assembly.mounted.find((w) => w.id === 'desktop-pet') as unknown as DesktopPetWorld;
