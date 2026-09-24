@@ -96,14 +96,14 @@ export interface PetDialog {
  * - `choices`: cards to try out before `confirm`, each with an optional level tag and icon (a pet-core
  *   `ICONS` name, or `image`, a `data:image/…` URL such as a service's logo); a card's `line` is typed when it is picked and
  *   its `motion` played (standing still, strolling, running about) until another is picked.
- * - `text`: a text box answered with the text; `secret` hides what is typed, `link` opens a page
- *   in the browser, `alt` is a second way out, answered as `{ alt: true }`.
+ * - `text`: a text box answered with the text; `secret` hides what is typed, `suggestions` are offered
+ *   as the person types, `link` opens a page in the browser, `alt` is a second way out, answered as `{ alt: true }`.
  * - `progress`: a bar the app moves with `update({ progress })`; it ends when the app closes it.
  */
 export type PetDialogInput =
   | { kind: 'buttons'; options: Array<{ label: string; primary?: boolean }>; keys?: string; taps?: number }
   | { kind: 'choices'; options: Array<{ label: string; level?: string; icon?: string; image?: string; line?: string; motion?: 'still' | 'walk' | 'run' }>; value?: number; confirm: string }
-  | { kind: 'text'; submit: string; placeholder?: string; value?: string; secret?: boolean; maxLength?: number; link?: { label: string; url: string }; alt?: string }
+  | { kind: 'text'; submit: string; placeholder?: string; value?: string; secret?: boolean; maxLength?: number; suggestions?: string[]; link?: { label: string; url: string }; alt?: string }
   | { kind: 'progress'; label?: string };
 
 /**

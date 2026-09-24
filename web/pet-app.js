@@ -391,6 +391,13 @@ function showDialogInput(it) {
     const field = form.querySelector('input');
     field.placeholder = input.placeholder || '';
     field.value = input.value || '';
+    if (Array.isArray(input.suggestions) && input.suggestions.length && !input.secret) {
+      const list = document.createElement('datalist');
+      list.id = `d-list-${it.id}`;
+      for (const s of input.suggestions) list.appendChild(Object.assign(document.createElement('option'), { value: String(s) }));
+      form.appendChild(list);
+      field.setAttribute('list', list.id);
+    }
     field.setAttribute('aria-label', it.text);
     form.querySelector('.d-send').textContent = input.submit;
     form.querySelector('.d-peek')?.addEventListener('click', (e) => {
