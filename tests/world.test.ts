@@ -84,7 +84,7 @@ describe('with a pet page', () => {
     expect(ask.options).toEqual(['茶', '咖啡', '水']);
     page.send({ t: 'answer', askId: ask.id, index: 1 });
     await expect.poll(() => host.events.length).toBe(1);
-    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.answer', source: 'desktop-pet', text: '[回答] 主人回答「喝什么?」:选了第 2 项「咖啡」' });
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.answer', source: 'desktop-pet', text: '[回答] 伙伴回答「喝什么?」:选了第 2 项「咖啡」' });
     expect(host.pushOpts[0]).toEqual({ trigger: 'flush' });
   });
 
@@ -100,7 +100,7 @@ describe('with a pet page', () => {
     const a2 = await page.next((m) => m.t === 'ask');
     page.send({ t: 'answer', askId: a2.id, dismissed: true });
     await expect.poll(() => host.events.length).toBe(2);
-    expect(host.events.map((e) => e.text)).toEqual(['[回答] 主人回答「A?」:自己写了:「都不要」', '[回答] 主人关掉了提问「B?」,没有作答。']);
+    expect(host.events.map((e) => e.text)).toEqual(['[回答] 伙伴回答「A?」:自己写了:「都不要」', '[回答] 伙伴关掉了提问「B?」,没有作答。']);
   });
 
   it('an answer to a replaced question is ignored', async () => {
@@ -130,7 +130,7 @@ describe('with a pet page', () => {
     const interrupted = tool(world, 'pet_walk_to').handler({ to: .1 }, ctx);
     const w2 = await page.next((m) => m.t === 'walk');
     page.send({ t: 'interrupted', walkId: w2.id, x: .4, by: 'drag' });
-    expect(await interrupted).toEqual({ text: '没走到:走到 40% 处时被主人拎起来了。' });
+    expect(await interrupted).toEqual({ text: '没走到:走到 40% 处时被伙伴拎起来了。' });
   });
 
   it('pet_walk_to rejects a target it cannot read', async () => {
@@ -156,7 +156,7 @@ describe('with a pet page', () => {
     cleanup.push(() => page.close());
     for (let i = 0; i < 3; i++) page.send({ t: 'touch', kind: 'poke' });
     await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(1);
-    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.touch', text: '[互动] 主人戳了你 3 下' });
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.touch', text: '[互动] 伙伴戳了你 3 下' });
     expect(host.pushOpts[0]).toEqual({ trigger: DESKTOP_PET_DEFAULTS.touch.trigger });
   });
 
@@ -168,7 +168,7 @@ describe('with a pet page', () => {
     page.send({ t: 'touch', kind: 'throw', x: 300 });
     page.send({ t: 'touch', kind: 'crash' });
     await expect.poll(() => host.events.length, { timeout: 6000 }).toBe(1);
-    expect(host.events[0].text).toBe('[互动] 主人把你拎起来甩了出去,你重重落地,摔晕了一会儿');
+    expect(host.events[0].text).toBe('[互动] 伙伴把你拎起来甩了出去,你重重落地,摔晕了一会儿');
   });
 
   it('sends no touch events when touch reporting is off', async () => {
@@ -214,7 +214,7 @@ describe('with a pet page', () => {
     await tab.next((m) => m.t === 'watching');
     tab.send({ t: 'text', text: 'hi' });
     await expect.poll(() => host.events.length).toBe(1);
-    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.message', text: '[打字] 主人:hi' });
+    expect(host.events[0]).toMatchObject({ type: 'desktop-pet.message', text: '[打字] 伙伴:hi' });
     const theme = DESKTOP_PET_DEFAULTS.theme === 'dark' ? 'light' : 'dark';
     tab.send({ t: 'prefs', theme });
     expect((await win.next((m) => m.t === 'prefs')).theme).toBe(theme);

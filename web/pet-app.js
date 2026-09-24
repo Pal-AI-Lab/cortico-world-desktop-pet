@@ -21,7 +21,7 @@ const skinStyle = document.createElement('style');
 document.head.appendChild(skinStyle);
 
 const prefs = {
-  roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '主人', mic: false, micDevice: '', bot: null,
+  roam: 'calm', sound: true, theme: document.documentElement.dataset.theme, scale: 1, user: '伙伴', mic: false, micDevice: '', bot: null,
   /** Voice input: switched on, recognizer ready, why not, how to talk, and the mode in force. */
   voice: { enabled: false, ready: false, detail: null, hint: '', mode: 'hold' },
   /** The actions shown as buttons beside the pet on hover. */
@@ -245,7 +245,23 @@ function typeText(it, text, dt, anchors) {
     if (!SILENT.test(ch)) { sfx.babble(ch); ctl.talk(); }
     while (it.fired < anchors.length && anchors[it.fired].at <= it.shown) acts.push(...anchors[it.fired++].actions);
   }
-  p.textContent = text.slice(0, it.shown);
+  if (it.marks?.length) p.innerHTML = marked(text, it.shown, it.marks);
+  else p.textContent = text.slice(0, it.shown);
+}
+
+/** The first `n` characters of `text`, escaped, with every one of `words` in it wrapped for the theme color. */
+function marked(text, n, words) {
+  const on = new Array(text.length).fill(false);
+  for (const w of words) {
+    if (!w) continue;
+    for (let i = text.indexOf(w); i >= 0; i = text.indexOf(w, i + w.length)) on.fill(true, i, i + w.length);
+  }
+  let out = '', open = false;
+  for (let i = 0; i < n; i++) {
+    if (on[i] !== open) { out += on[i] ? '<b class="d-mark">' : '</b>'; open = on[i]; }
+    out += esc(text[i]);
+  }
+  return open ? out + '</b>' : out;
 }
 
 function showOptions(it) {
@@ -317,6 +333,7 @@ function openDialog(it) {
   bubble.querySelector('.b-close')?.addEventListener('click', () => settleDialog(it, { closed: true }));
   for (const a of d.actions || []) acts.push(a);
   it.text = d.text || ''; it.shown = 0; it.acc = 0; it.bodyShown = false; it.readUntil = 0;
+  it.marks = Array.isArray(d.marks) ? d.marks.filter((w) => typeof w === 'string') : [];
   sfx.pop();
 }
 

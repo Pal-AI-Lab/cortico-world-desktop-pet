@@ -29,12 +29,12 @@ bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两�
 
 | `type` | 正文 | 投递 |
 |---|---|---|
-| `desktop-pet.speech` | `[语音] 主人:…` | flush |
-| `desktop-pet.message` | `[打字] 主人:…`(双击或悬停按钮) | flush |
-| `desktop-pet.answer` | `[回答] 主人回答「问题」:选了第 2 项「…」` / 自己写的 / 关掉没答 | flush,关掉没答为 debounce |
-| `desktop-pet.touch` | `[互动] 主人戳了你 3 下` / 摸了摸 / 拎起来甩了出去 / 摔晕 | `worlds.desktop-pet.touch.trigger`,默认 debounce |
+| `desktop-pet.speech` | `[语音] 伙伴:…` | flush |
+| `desktop-pet.message` | `[打字] 伙伴:…`(双击或悬停按钮) | flush |
+| `desktop-pet.answer` | `[回答] 伙伴回答「问题」:选了第 2 项「…」` / 自己写的 / 关掉没答 | flush,关掉没答为 debounce |
+| `desktop-pet.touch` | `[互动] 伙伴戳了你 3 下` / 摸了摸 / 拎起来甩了出去 / 摔晕 | `worlds.desktop-pet.touch.trigger`,默认 debounce |
 
-同一种互动 2.5 秒内连着来,并成一条带次数的事件。「主人」取自 `worlds.desktop-pet.user`。
+同一种互动 2.5 秒内连着来,并成一条带次数的事件。「伙伴」取自 `worlds.desktop-pet.user`。
 
 ## 桌宠窗口
 

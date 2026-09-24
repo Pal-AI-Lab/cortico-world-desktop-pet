@@ -81,6 +81,8 @@ export interface PetBotControls {
  */
 export interface PetDialog {
   text: string;
+  /** Words in `text` drawn in the theme color, such as a name said for the first time. */
+  marks?: string[];
   /** Expressions and motions (vocabulary words) played as the line starts. */
   actions?: string[];
   step?: [number, number];

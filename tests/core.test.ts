@@ -23,7 +23,7 @@ describe('desktop pet through Core', () => {
     const model = new ScriptedModel((turn) => {
       const seen = JSON.stringify(turn.records);
       if (turn.n === 0) {
-        expect(seen).toContain('[打字] 主人:在吗');
+        expect(seen).toContain('[打字] 伙伴:在吗');
         return { calls: [
           { name: 'pet_say', args: { script: '【开心】在呢!' } },
           { name: 'pet_ask', args: { question: '想做什么?', options: ['聊天', '休息'] } },
@@ -47,6 +47,6 @@ describe('desktop pet through Core', () => {
     expect(ask.options).toEqual(['聊天', '休息']);
 
     page.send({ t: 'answer', askId: ask.id, index: 1 });
-    await expect.poll(() => model.turns.some((t) => JSON.stringify(t.records).includes('[回答] 主人回答「想做什么?」:选了第 2 项「休息」')), { timeout: 20_000 }).toBe(true);
+    await expect.poll(() => model.turns.some((t) => JSON.stringify(t.records).includes('[回答] 伙伴回答「想做什么?」:选了第 2 项「休息」')), { timeout: 20_000 }).toBe(true);
   });
 });

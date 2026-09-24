@@ -87,7 +87,7 @@ export interface DesktopPetConfigSection extends WorldSection {
 export const DESKTOP_PET_DEFAULTS: DesktopPetConfigSection = {
   enabled: false,
   port: 7797,
-  user: '主人',
+  user: '伙伴',
   window: { enabled: true, electronFile: '', scale: 1 },
   roam: 'calm',
   sound: true,

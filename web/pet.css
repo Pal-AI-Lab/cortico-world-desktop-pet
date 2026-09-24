@@ -97,6 +97,7 @@ body.desk .floor{display:none}
 .b-own button{flex:none; font:inherit; font-size:12.5px; padding:4px 10px; border-radius:8px; border:0; background:var(--text); color:var(--surface); cursor:pointer}
 .b-opt.dim, .b-own.dim{opacity:.35}
 /* an app's conversation: one step per bubble, with the answer's controls under Coo's line */
+.d-mark{color:var(--skin-eye); font-weight:700}
 .bubble.talk{width:min(318px, calc(100vw - 20px)); max-width:none; padding:11px 14px 12px}
 .d-top{display:flex; align-items:center; min-height:14px; margin:-2px 22px 5px 0}
 .bubble.talk .b-close{top:4px; right:5px}
