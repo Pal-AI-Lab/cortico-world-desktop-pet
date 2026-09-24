@@ -374,7 +374,8 @@ function showDialogInput(it) {
       const c = document.createElement('button');
       c.type = 'button'; c.className = 'd-card';
       c.style.animationDelay = (i * .07) + 's';
-      c.innerHTML = `${o.icon && ICONS[o.icon] ? `<span class="d-cardic">${ICONS[o.icon]}</span>` : ''}<span class="d-cardlbl">${esc(o.label)}</span>${o.level ? `<b class="d-level">${esc(o.level)}</b>` : ''}`;
+      const image = typeof o.image === 'string' && o.image.startsWith('data:image/') ? `<img class="d-cardimg" alt="" src="${esc(o.image)}">` : '';
+      c.innerHTML = `${image || (o.icon && ICONS[o.icon] ? `<span class="d-cardic">${ICONS[o.icon]}</span>` : '')}<span class="d-cardlbl">${esc(o.label)}</span>${o.level ? `<b class="d-level">${esc(o.level)}</b>` : ''}`;
       c.addEventListener('click', () => { sfx.tick(); pick(i, true); });
       cards.appendChild(c);
       setTimeout(() => sfx.blub(), i * 70);
