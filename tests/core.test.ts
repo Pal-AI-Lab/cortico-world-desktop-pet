@@ -34,7 +34,7 @@ describe('desktop pet through Core', () => {
     });
     bot = await startBot({
       worlds: [DESKTOP_PET as never],
-      sections: { 'desktop-pet': { port: 0, window: { enabled: false, electronFile: '', scale: 1 }, asr: { ...(DESKTOP_PET.defaults() as { asr: object }).asr, enabled: false } } },
+      sections: { 'desktop-pet': { port: 0, window: { enabled: false, electronFile: '', scale: 1 }, asr: { ...(DESKTOP_PET.defaults() as { asr: object }).asr, enabled: false, mic: { mode: 'always' } } } },
       model,
     });
     const world = bot.assembly.mounted.find((w) => w.id === 'desktop-pet') as unknown as DesktopPetWorld;

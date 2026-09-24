@@ -2,12 +2,15 @@
  * Windows' own recognizer behind its line protocol: a fake helper process for the protocol,
  * and on Windows the real one once.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SystemRecognizer, systemRecognizerSupported } from '../src/asr/system-recognizer.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { fakeSapi } from './helpers/fake-sapi.ts';
 
 const log = new FakeHost().log;
+const platform = process.platform;
+beforeEach(() => Object.defineProperty(process, 'platform', { value: 'win32' }));
+afterEach(() => Object.defineProperty(process, 'platform', { value: platform }));
 
 describe('SystemRecognizer', () => {
   it('streams a sentence frame by frame and reports the text as it grows', async () => {

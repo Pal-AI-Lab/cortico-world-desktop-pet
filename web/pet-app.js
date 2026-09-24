@@ -930,7 +930,12 @@ document.addEventListener('contextmenu', (e) => {
 document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.menu')) closeMenu(); }, { capture: true });
 // clicks off the figure pass through the window to what is underneath; the window losing focus is how they show here
 window.addEventListener('blur', closeMenu);
+document.addEventListener('focusin', (e) => {
+  if (e.target.matches?.('input, textarea')) host?.focus?.();
+});
 document.addEventListener('keydown', (e) => {
+  // Escape and number keys belong to the input method while choosing a candidate.
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Escape') {
     closeMenu();
     if (item && item.kind === 'ask') dismissAsk();
@@ -1004,7 +1009,7 @@ const SAME_COLOR = .15;
 /** Share of such pixels around the body that turns the halo on (most of them), and the share it turns off below. */
 const HALO_ON = .6, HALO_OFF = .45;
 /** The halo's opacity when fully on. */
-const HALO_STRENGTH = .8;
+const HALO_STRENGTH = .5;
 const petG = $('#pet'), haloFlood = $('#haloFlood');
 // a window host too old to sample the screen keeps the halo on; a browser tab draws its own wall
 const backdrop = { on: !!host && !host.sampleBackdrop, fixed: !!host && !host.sampleBackdrop, k: 0, busy: false, next: 0 };

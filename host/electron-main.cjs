@@ -186,7 +186,8 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
         autoplayPolicy: 'no-user-gesture-required',
       },
     });
-    win.setAlwaysOnTop(true, 'screen-saver');
+    // Native candidate windows and Chromium popups must remain above the pet.
+    win.setAlwaysOnTop(true, process.platform === 'darwin' ? 'floating' : 'screen-saver');
     // on every Space, and over an app in full screen
     if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     win.setIgnoreMouseEvents(true, { forward: true });
@@ -223,7 +224,12 @@ function runPetHost({ url, parentPid = 0, tray: withTray = true }) {
   };
 
   ipcMain.on('pet:interactive', (_e, on) => { if (win) win.setIgnoreMouseEvents(!on, { forward: true }); });
-  ipcMain.on('pet:focus', () => { if (win) win.focus(); });
+  ipcMain.on('pet:focus', () => {
+    if (!win) return;
+    // Explicit text input activates this menu-bar process as well as its window.
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    win.focus();
+  });
   /** The window that had the keyboard before a question took it; it gets it back afterwards. */
   let lent = 0n;
   ipcMain.on('pet:grabFocus', () => {

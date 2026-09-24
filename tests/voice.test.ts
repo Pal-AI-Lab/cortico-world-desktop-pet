@@ -70,9 +70,11 @@ const tone = (ms: number, amp: number) => {
   return frames;
 };
 
+const platform = process.platform;
 let cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const fn of cleanup.reverse()) await fn();
+  Object.defineProperty(process, 'platform', { value: platform });
   cleanup = [];
 });
 
@@ -156,6 +158,7 @@ describe('voice input', () => {
     const { watch } = scriptedKey('no keyboard here');
     const { host, page, world } = await setup('还是听得见', 'hold', watch);
     expect(world.voiceState().input).toMatchObject({ mode: 'hold', effectiveMode: 'always', hotkeyProblem: 'no keyboard here', open: true });
+    expect((world.voiceState().input as { hint: string }).hint).toContain('no keyboard here');
     for (const fr of [...tone(900, .3), ...tone(900, 0)]) page.audio(fr);
     await expect.poll(() => host.events.length, { timeout: 5000 }).toBe(1);
   });
@@ -196,6 +199,7 @@ describe('voice input', () => {
   });
 
   it('system engine: the bubble shows the sentence while it is spoken, then the event carries the final text', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
     const cfg = structuredClone(DESKTOP_PET_DEFAULTS);
     Object.assign(cfg, { enabled: true, port: 0 });
     cfg.window.enabled = false;

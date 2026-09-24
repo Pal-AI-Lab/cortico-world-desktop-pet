@@ -712,7 +712,9 @@ export class DesktopPetWorld implements World {
     const { hotkey } = this.cfg.asr.mic;
     const key = comboLabel(hotkey), { taps } = splitTaps(hotkey);
     const mode = this.micMode();
-    if (mode === 'always') return '一直在听,直接说话';
+    if (mode === 'always') return this.hotkeyProblem
+      ? `说话键不可用，暂时自动收音：${this.hotkeyProblem}`
+      : '一直在听,直接说话';
     if (mode === 'toggle') return taps > 1 ? `${hotkeyLabel(hotkey)} 开始听,再${taps === 2 ? '双击' : '三击'}停` : `按一下 ${key} 开始听,再按一下停`;
     return taps > 1 ? `快速按${taps === 2 ? '一' : '两'}下 ${key},紧接着按住说话,松开就发出去` : `按住 ${key} 说话,松开就发出去`;
   }
