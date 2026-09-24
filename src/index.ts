@@ -7,5 +7,5 @@ export { DESKTOP_PET };
 export { desktopPetDefinition, type DesktopPetAssembly } from './definition.ts';
 export { DESKTOP_PET_DEFAULTS, DESKTOP_PET_CONFIG_GROUP, DESKTOP_PET_ASR_CONFIG_GROUP } from './config.ts';
 export type { DesktopPetConfigSection, PetSkin } from './config.ts';
-export { DesktopPetWorld, type ConfirmResult, type PetBotControls } from './world.ts';
+export { DesktopPetWorld, type ConfirmResult, type PetBotControls, type PetDialog, type PetDialogAnswer, type PetDialogHandle, type PetDialogInput, type PetDialogUpdate } from './world.ts';
 export { HOST_ENV, HOST_MAIN } from './window-host.ts';

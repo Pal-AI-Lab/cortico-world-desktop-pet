@@ -1,8 +1,8 @@
 /**
  * The pet page. Connects to the World over `/socket?role=pet`, runs the body from pet-core,
- * and turns World orders (say, ask, walk, act, listen) into bubbles and motion. It reports
- * back only what happened on screen: arrivals, answers, touches, typed text, and 16 kHz
- * microphone audio while voice input is on.
+ * and turns World orders (say, ask, walk, act, listen, and the steps of an app's conversation)
+ * into bubbles and motion. It reports back only what happened on screen: arrivals, answers,
+ * touches, typed text, and 16 kHz microphone audio while voice input is on.
  *
  * In the pet window (`window.petHost` from the preload) the page is transparent and the
  * window ignores the mouse except over the figure, a bubble, the menu or the hover buttons.
@@ -56,6 +56,8 @@ function connect() {
   ws.onclose = (e) => {
     ws = null;
     stopMic();
+    // the World gave up on these steps when the page went; it asks again once the page is back
+    dropDialogs();
     if (e.code === 4000) return; // replaced by a newer pet page
     setTimeout(connect, backoff);
     backoff = Math.min(8000, backoff * 2);
@@ -90,6 +92,9 @@ function onOrder(m) {
     case 'act': acts.push(...m.actions); ctl.holdRoam(20); break;
     case 'listen': onListen(m); break;
     case 'thinking': ctl.setThinking(!!m.on); break;
+    case 'dialog': queue.push({ kind: 'dialog', id: m.id, d: m }); ctl.holdRoam(20); break;
+    case 'dialog-update': updateDialog(m); break;
+    case 'dialog-close': endDialog(m.id); break;
   }
 }
 
@@ -164,6 +169,7 @@ function openBubble(kind, html) {
 }
 function closeBubble() {
   releaseKeys(item);
+  if (item?.kind === 'dialog') talk.motion = null;
   bubble.hidden = true; bubble.innerHTML = '';
   item = null;
 }
@@ -185,6 +191,7 @@ function releaseKeys(it) {
 
 function startItem(it) {
   item = it;
+  if (it.kind === 'dialog') { openDialog(it); return; }
   if (it.kind === 'ask') {
     openBubble('ask', '<button class="b-close" type="button" aria-label="关闭">×</button><p class="b-text"></p><div class="b-opts" hidden></div>');
     bubble.querySelector('.b-close').addEventListener('click', () => dismissAsk());
@@ -225,6 +232,7 @@ function stepDialog(dt) {
     if (it.shown < it.text.length) { typeText(it, it.text, dt, []); return; }
     if (!it.optsShown) { it.optsShown = true; showOptions(it); }
   }
+  if (it.kind === 'dialog') stepTalk(it, dt);
 }
 
 function typeText(it, text, dt, anchors) {
@@ -290,6 +298,186 @@ function dismissAsk() {
   closeBubble();
 }
 
+/* ---------- an app's conversation: one step at a time in Coo's bubble ---------- */
+/** How Coo moves while a step's choice cards are up, around the spot the bubble is pinned to. */
+const talk = { motion: null, next: 0 };
+/** Pixels Coo strays either side of the bubble while showing a motion. */
+const TALK_RANGE = 240;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+function dropDialogs() {
+  for (let i = queue.length - 1; i >= 0; i--) if (queue[i].kind === 'dialog') queue.splice(i, 1);
+  if (item?.kind === 'dialog') closeBubble();
+}
+
+function openDialog(it) {
+  const d = it.d;
+  const dots = Array.isArray(d.step) ? Array.from({ length: d.step[1] }, (_, i) => `<i class="${i + 1 < d.step[0] ? 'past' : i + 1 === d.step[0] ? 'on' : ''}"></i>`).join('') : '';
+  openBubble('talk', `${dots || d.closable ? `<div class="d-top"><span class="d-dots">${dots}</span>${d.closable ? '<button class="b-close" type="button" aria-label="跳过" title="跳过">×</button>' : ''}</div>` : ''}<p class="b-text"></p><div class="d-body" hidden></div>`);
+  bubble.querySelector('.b-close')?.addEventListener('click', () => settleDialog(it, { closed: true }));
+  for (const a of d.actions || []) acts.push(a);
+  it.text = d.text || ''; it.shown = 0; it.acc = 0; it.bodyShown = false; it.readUntil = 0;
+  sfx.pop();
+}
+
+function stepTalk(it, dt) {
+  if (it.shown < it.text.length) { typeText(it, it.text, dt, []); return; }
+  if (it.bodyShown) return;
+  it.bodyShown = true;
+  if (!it.d.input) { it.readUntil = ctl.time + 1.4 + it.text.length * .05; return; }
+  showDialogInput(it);
+}
+
+/** A step with nothing to answer ends once its line has been read. */
+function stepTalkRead() {
+  const it = item;
+  if (it?.kind === 'dialog' && it.readUntil && ctl.time > it.readUntil) settleDialog(it, { done: true });
+}
+
+function showDialogInput(it) {
+  const body = bubble.querySelector('.d-body'), input = it.d.input;
+  if (!body) return;
+  if (input.kind === 'buttons') {
+    if (input.keys) body.insertAdjacentHTML('beforeend', `<div class="d-keys"><kbd class="d-key${input.taps > 1 ? ' taps' : ''}">${esc(input.keys)}</kbd>${input.taps > 1 ? `<span class="d-taps">×${Number(input.taps)}</span>` : ''}</div>`);
+    const row = Object.assign(document.createElement('div'), { className: 'd-row' });
+    input.options.forEach((o, i) => row.appendChild(pill(o.label, o.primary, () => settleDialog(it, { index: i }))));
+    body.appendChild(row);
+  } else if (input.kind === 'choices') {
+    const cards = Object.assign(document.createElement('div'), { className: 'd-cards' });
+    const pick = (i, speak) => {
+      it.value = i;
+      cards.querySelectorAll('.d-card').forEach((c, k) => c.classList.toggle('on', k === i));
+      const o = input.options[i];
+      // the bubble stays put from here on, so the cards do not run off while Coo shows how it moves
+      if (it.pinX === undefined) { const a = ctl.anchor(); it.pinX = a.x; it.pinY = a.y; }
+      talk.motion = o?.motion ?? null; talk.next = 0;
+      if (speak && o?.line) { it.text = o.line; it.shown = 0; it.acc = 0; }
+    };
+    input.options.forEach((o, i) => {
+      const c = document.createElement('button');
+      c.type = 'button'; c.className = 'd-card';
+      c.style.animationDelay = (i * .07) + 's';
+      c.innerHTML = `${o.icon && ICONS[o.icon] ? `<span class="d-cardic">${ICONS[o.icon]}</span>` : ''}<span class="d-cardlbl">${esc(o.label)}</span>${o.level ? `<b class="d-level">${esc(o.level)}</b>` : ''}`;
+      c.addEventListener('click', () => { sfx.tick(); pick(i, true); });
+      cards.appendChild(c);
+      setTimeout(() => sfx.blub(), i * 70);
+    });
+    body.appendChild(cards);
+    const row = Object.assign(document.createElement('div'), { className: 'd-row' });
+    row.appendChild(pill(input.confirm, true, () => settleDialog(it, { index: it.value ?? 0 })));
+    body.appendChild(row);
+    pick(typeof input.value === 'number' ? input.value : 0, false);
+  } else if (input.kind === 'text') {
+    const form = Object.assign(document.createElement('form'), { className: 'd-field' });
+    form.innerHTML = `<input type="${input.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" maxlength="${Number(input.maxLength) || 200}">${input.secret ? `<button class="d-peek" type="button" aria-label="显示" title="显示">${ICONS.eye}</button>` : ''}<button class="d-send" type="submit"></button>`;
+    const field = form.querySelector('input');
+    field.placeholder = input.placeholder || '';
+    field.value = input.value || '';
+    field.setAttribute('aria-label', it.text);
+    form.querySelector('.d-send').textContent = input.submit;
+    form.querySelector('.d-peek')?.addEventListener('click', (e) => {
+      const show = field.type === 'password';
+      field.type = show ? 'text' : 'password';
+      e.currentTarget.innerHTML = show ? ICONS.eyeOff : ICONS.eye;
+      field.focus();
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = field.value.trim();
+      if (!v) { form.classList.remove('shake'); void form.offsetWidth; form.classList.add('shake'); field.focus(); return; }
+      settleDialog(it, { text: v });
+    });
+    body.appendChild(form);
+    if (input.link || input.alt) {
+      const row = Object.assign(document.createElement('div'), { className: 'd-links' });
+      if (input.link) {
+        const a = Object.assign(document.createElement('a'), { className: 'd-link', href: input.link.url, target: '_blank', rel: 'noopener' });
+        a.innerHTML = `<span></span>${ICONS.external}`;
+        a.querySelector('span').textContent = input.link.label;
+        row.appendChild(a);
+      }
+      if (input.alt) {
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'd-alt', textContent: input.alt });
+        b.addEventListener('click', () => settleDialog(it, { alt: true }));
+        row.appendChild(b);
+      }
+      body.appendChild(row);
+    }
+    // the window takes the keyboard so the box can be typed in right away
+    host?.focus?.();
+    setTimeout(() => field.focus(), 30);
+  } else if (input.kind === 'progress') {
+    body.innerHTML = `<div class="d-bar${typeof it.progress === 'number' ? '' : ' wait'}"><i></i></div><div class="d-barlbl"><span></span><b></b></div>`;
+    body.querySelector('.d-barlbl span').textContent = input.label || '';
+    drawProgress(it);
+  }
+  body.hidden = false;
+  body.querySelector('.d-send, .d-pill.primary')?.focus?.({ preventScroll: true });
+}
+
+function pill(label, primary, onClick) {
+  const b = Object.assign(document.createElement('button'), { type: 'button', className: `d-pill${primary ? ' primary' : ''}`, textContent: label });
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function drawProgress(it) {
+  const bar = bubble.querySelector('.d-bar');
+  if (!bar) return;
+  const p = it.progress;
+  bar.classList.toggle('wait', typeof p !== 'number');
+  bar.querySelector('i').style.width = typeof p === 'number' ? `${Math.round(clamp(p, 0, 1) * 100)}%` : '';
+  bubble.querySelector('.d-barlbl b').textContent = typeof p === 'number' ? `${Math.floor(clamp(p, 0, 1) * 100)}%` : '';
+}
+
+function updateDialog(m) {
+  const it = item?.kind === 'dialog' && item.id === m.id ? item : queue.find((q) => q.kind === 'dialog' && q.id === m.id);
+  if (!it) return;
+  if ('progress' in m) it.progress = m.progress;
+  if (typeof m.text === 'string') {
+    it.d = { ...it.d, text: m.text };
+    if (it === item) { it.text = m.text; it.shown = 0; it.acc = 0; }
+  }
+  if (it === item) drawProgress(it);
+}
+
+function endDialog(id) {
+  const i = queue.findIndex((q) => q.kind === 'dialog' && q.id === id);
+  if (i >= 0) queue.splice(i, 1);
+  if (item?.kind === 'dialog' && item.id === id) closeBubble();
+}
+
+function settleDialog(it, answer) {
+  if (item !== it || it.answered) return;
+  it.answered = true;
+  send({ t: 'dialog', id: it.id, ...answer });
+  if (answer.done) { closeBubble(); return; }
+  sfx.select();
+  bubble.querySelectorAll('button, input').forEach((n) => { n.disabled = true; });
+  if ('index' in answer) bubble.querySelectorAll('.d-pill')[answer.index]?.classList.add('chosen');
+  // the chosen button shows a moment; the app's next step waits in the queue meanwhile
+  setTimeout(() => { if (item === it) closeBubble(); }, 260);
+}
+
+/** Coo shows the picked card's motion near the pinned bubble: standing still, strolling, or running about. */
+function stepTalkMotion() {
+  const it = item;
+  if (it?.kind !== 'dialog') return;
+  ctl.holdRoam(20);
+  if (!talk.motion || it.pinX === undefined || ctl.busy() || ctl.time < talk.next || ctl.pet.mode !== 'idle') return;
+  const home = it.pinX, R = Math.min(TALK_RANGE, innerWidth * .25);
+  if (talk.motion === 'still') {
+    if (Math.abs(ctl.pet.x - home) > 30) ctl.walkTo(home, false);
+    talk.next = ctl.time + 1;
+    return;
+  }
+  const run = talk.motion === 'run';
+  if (run && Math.random() < .3) { ctl.act('hop'); talk.next = ctl.time + .5; return; }
+  // to the other side of the bubble each time, so every move is plain to see
+  const x = ctl.pet.x < home ? home + R * (.4 + Math.random() * .6) : home - R * (.4 + Math.random() * .6);
+  if (ctl.walkTo(clamp(x, 40, innerWidth - 40), run)) talk.next = ctl.time + (run ? .1 : 1.2 + Math.random() * 1.2);
+}
+
 /* ---------- typed input: the hover button, or double-click ---------- */
 function openInput() {
   closeMenu();
@@ -315,6 +503,14 @@ function openInput() {
 /** `text` is settled, `interim` the sentence still being heard (Windows' recognizer reports it as it goes). */
 const listen = { phase: null, text: '', interim: '', closeAt: 0 };
 function onListen(m) {
+  // the quick tap before a talk key is held: Coo perks up, and the hold that follows starts listening
+  if (m.phase === 'ready') {
+    if (listen.phase) return;
+    sfx.tick();
+    ctl.pet.sqv += .6;
+    ctl.setExpr('surprised', .5);
+    return;
+  }
   if (m.phase === 'start') {
     if (!listen.phase) sfx.listenStart();
     listen.phase = 'hearing'; listen.closeAt = 0;
@@ -737,6 +933,16 @@ function place(el, a, extraUp, side) {
   el.style.setProperty('--tail', f(clamp(a.x - left, 22, bw - 22)) + 'px');
   return { left, top, bw, bh };
 }
+function placeTalk(it, a) {
+  const bw = bubble.offsetWidth, bh = bubble.offsetHeight;
+  const left = clamp(it.pinX - bw / 2, 10, Math.max(10, innerWidth - bw - 10));
+  const top = Math.max(8, it.pinY - bh - 18);
+  bubble.style.left = f(left) + 'px';
+  bubble.style.top = f(top) + 'px';
+  bubble.style.setProperty('--tail', f(clamp(a.x - left, 22, bw - 22)) + 'px');
+  return { left, top, bw, bh };
+}
+
 /** Beside the body, on the right unless that runs off the screen. */
 function placeTools() {
   const c = ctl.toStage(128, 128 + ctl.pet.low), reach = 104 * ctl.bounds.S + 10;
@@ -749,7 +955,9 @@ function layout() {
   if (!tools.hidden) placeTools();
   const a = ctl.anchor();
   let sayBox = null;
-  if (!bubble.hidden) sayBox = place(bubble, a, 18, 0);
+  // choice cards keep their bubble where it was; its tail follows Coo along the bottom edge
+  if (!bubble.hidden && item?.kind === 'dialog' && item.pinX !== undefined) sayBox = placeTalk(item, a);
+  else if (!bubble.hidden) sayBox = place(bubble, a, 18, 0);
   if (!heardEl.hidden) {
     const side = sayBox ? -ctl.pet.facing : 0;
     const r = place(heardEl, a, 46, side);
@@ -843,6 +1051,8 @@ function frame(now) {
   const dt = Math.min(.05, (now - last) / 1000); last = now;
   stepActs();
   stepDialog(dt);
+  stepTalkRead();
+  stepTalkMotion();
   stepListen();
   ctl.step(dt);
   ctl.render();

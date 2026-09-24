@@ -6,8 +6,10 @@
  * Elsewhere, or when koffi does not load, `watchHotkey` returns the reason instead of a watcher.
  *
  * A hotkey is key names joined by `+` (`RightCtrl`, `Ctrl+Space`, `F8`, `Mouse4`); it is down
- * while every named key is down. The names are Windows' (`Alt` is Option and `Win` is Command
- * on a Mac); `parseHotkey` gives Windows virtual-key codes, which the macOS reader maps to its own.
+ * while every named key is down. `*2` or `*3` at the end asks for quick taps first: `LeftAlt*2`
+ * is down from the second press of a quick tap and a press (tap once, then hold). The names are
+ * Windows' (`Alt` is Option and `Win` is Command on a Mac); `parseHotkey` gives Windows
+ * virtual-key codes, which the macOS reader maps to its own.
  */
 
 const NAMED: Record<string, number> = {
@@ -21,12 +23,26 @@ const NAMED: Record<string, number> = {
   Mouse3: 0x04, Mouse4: 0x05, Mouse5: 0x06,
 };
 
-/** The talk key a new setup gets: right Ctrl, or right Option on a Mac, whose laptops have no right Ctrl. */
-export const DEFAULT_HOTKEY = process.platform === 'darwin' ? 'RightAlt' : 'RightCtrl';
+/** The talk key a new setup gets: a tap of left Alt (left Option on a Mac), then hold it. Every keyboard has one. */
+export const DEFAULT_HOTKEY = 'LeftAlt*2';
 
-/** Virtual-key codes of `hotkey`, or null when a name is unknown. */
-export function parseHotkey(hotkey: string): number[] | null {
-  const parts = hotkey.split('+').map((p) => p.trim()).filter(Boolean);
+export interface Hotkey {
+  /** Virtual-key codes, all down together. */
+  keys: number[];
+  /** Presses it takes: the last one is the one held; the ones before are quick taps. */
+  taps: number;
+}
+
+/** The keys and the press count of `hotkey` (`LeftAlt*2` → `LeftAlt`, 2). */
+export function splitTaps(hotkey: string): { combo: string; taps: number } {
+  const m = /^(.*?)\s*\*\s*([1-3])$/.exec(hotkey.trim());
+  return m ? { combo: m[1]!, taps: Number(m[2]) } : { combo: hotkey.trim(), taps: 1 };
+}
+
+/** The keys and press count of `hotkey`, or null when a name is unknown. */
+export function parseHotkey(hotkey: string): Hotkey | null {
+  const { combo, taps } = splitTaps(hotkey);
+  const parts = combo.split('+').map((p) => p.trim()).filter(Boolean);
   if (!parts.length) return null;
   const codes: number[] = [];
   for (const p of parts) {
@@ -37,7 +53,7 @@ export function parseHotkey(hotkey: string): number[] | null {
     if (vk === undefined) return null;
     codes.push(vk);
   }
-  return codes;
+  return { keys: codes, taps };
 }
 
 const LABELS: Record<string, string> = {
@@ -50,10 +66,19 @@ const MAC_LABELS: Record<string, string> = {
   Alt: 'Option', LeftAlt: '左 Option', RightAlt: '右 Option', Win: 'Command', RightWin: '右 Command',
 };
 
-/** How the console names `hotkey` to a person, in the words of the platform's keyboard. */
-export function hotkeyLabel(hotkey: string, platform: NodeJS.Platform = process.platform): string {
+/** How the console names the keys of `hotkey` to a person, in the words of the platform's keyboard, without the taps. */
+export function comboLabel(hotkey: string, platform: NodeJS.Platform = process.platform): string {
   const labels = platform === 'darwin' ? MAC_LABELS : LABELS;
-  return hotkey.split('+').map((k) => labels[k] ?? k).join(' + ');
+  return splitTaps(hotkey).combo.split('+').map((k) => labels[k] ?? k).join(' + ');
+}
+
+const TAP_WORDS: Record<number, string> = { 2: '双击', 3: '三击' };
+
+/** `hotkey` named in full: `双击 左 Alt` for `LeftAlt*2`. */
+export function hotkeyLabel(hotkey: string, platform: NodeJS.Platform = process.platform): string {
+  const { taps } = splitTaps(hotkey);
+  const keys = comboLabel(hotkey, platform);
+  return taps > 1 ? `${TAP_WORDS[taps]} ${keys}` : keys;
 }
 
 /**
@@ -119,18 +144,47 @@ async function macReader(keys: number[]): Promise<KeyReader | string> {
   }
 }
 
-/** Calls `onChange` on every press and release of the hotkey whose codes are `keys`. */
-export async function watchHotkey(keys: number[], onChange: (down: boolean) => void, pollMs: number): Promise<KeyWatcher | string> {
+/**
+ * Longest press that still counts as a tap before the held one. A deliberate tap lasts about
+ * 100 ms; a key held for Alt+Tab or a shortcut lasts longer and starts nothing.
+ */
+export const TAP_MAX_MS = 300;
+/** Longest pause between a tap's release and the next press; Windows' double-click time (500 ms, press to press) minus a tap. */
+export const TAP_GAP_MS = 400;
+
+/**
+ * Turns the key's raw ups and downs into the hotkey's: with taps, the key is down only from the
+ * last press of a quick sequence. `onTap` gets each finished quick tap (the count so far), so
+ * the pet can react before the key is held.
+ */
+export function tapTracker(taps: number, onChange: (down: boolean) => void, onTap: (count: number) => void = () => {}) {
+  let count = 0, lastUp = 0, pressAt = 0, active = false;
+  return (down: boolean, now: number): void => {
+    if (down) {
+      if (count && now - lastUp > TAP_GAP_MS) count = 0;
+      if (count === taps - 1) { count = 0; active = true; onChange(true); return; }
+      pressAt = now;
+      return;
+    }
+    if (active) { active = false; onChange(false); return; }
+    if (now - pressAt <= TAP_MAX_MS) { count++; lastUp = now; onTap(count); } else count = 0;
+  };
+}
+
+/** Calls `onChange` on every press and release of `hotkey`, and `onTap` on each quick tap before its held press. */
+export async function watchHotkey(hotkey: Hotkey, onChange: (down: boolean) => void, pollMs: number, onTap?: (count: number) => void): Promise<KeyWatcher | string> {
+  const { keys, taps } = hotkey;
   const reader = process.platform === 'win32' ? await windowsReader()
     : process.platform === 'darwin' ? await macReader(keys)
     : '按键收音只在 Windows 和 macOS 上可用';
   if (typeof reader === 'string') return reader;
+  const step = tapTracker(taps, onChange, onTap);
   let down = false;
   const timer = setInterval(() => {
     const now = keys.every((vk) => reader(vk));
     if (now === down) return;
     down = now;
-    onChange(now);
+    step(now, Date.now());
   }, pollMs);
   return { stop: () => clearInterval(timer) };
 }

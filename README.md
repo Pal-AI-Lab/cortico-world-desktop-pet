@@ -102,11 +102,13 @@ SenseVoice 一次识别整句;说话过程中每 0.5 秒把这句到目前为止
 
 | `asr.mic.mode` | 行为 |
 |---|---|
-| `hold`(默认) | 按住说话键时收音,整段都算话,松开即一句结束 |
+| `hold`(默认) | 按住说话键时收音,整段都算话,松开即一句结束;连按的键是最后一下按住时收音 |
 | `toggle` | 按一下说话键开始,再按一下停;中间按停顿切句 |
 | `always` | 一直收音,按停顿切句 |
 
-说话键 `asr.mic.hotkey` 默认 `RightCtrl`(Mac 上默认 `RightAlt`,即右 Option),用 `+` 连写组合键(`Ctrl+Space`、`F8`、`Mouse4`),在哪个窗口里按都算。
+说话键 `asr.mic.hotkey` 用 `+` 连写组合键(`Ctrl+Space`、`F8`、`Mouse4`),结尾加 `*2` / `*3` 表示连按:前面几下是快速的一按一放(每下不超过 300 ms,两下之间隔不超过 400 ms),最后一下按住才算按下。
+默认 `LeftAlt*2`:快速按一下左 Alt(Mac 上是左 Option),紧接着按住说话。按完快速的那一下,World 给桌宠页发 `listen` 的 `ready`,Coo 先抬头看一眼,按住时立刻进入聆听。
+在哪个窗口里按都算;「语音输入」面板的说话键按钮会录下组合键,在 400 ms 内再按一次同样的键就记成连按。
 Windows 上经 koffi 轮询 Win32 `GetAsyncKeyState` 读取;macOS 上轮询 CoreGraphics 的 `CGEventSourceKeyState`,要在「系统设置 → 隐私与安全性 → 输入监控」里允许,第一次会弹出询问。读不到时退回 `always`,面板上写明原因。
 `asr.mic.deviceId` 选麦克风,留空用系统默认;设备列表由桌宠页在拿到麦克风权限后报上来。
 麦克风在「开启语音输入」总开关开着时一直打开,电平条随时显示音量,说话键只决定哪一段送去识别。
@@ -117,6 +119,12 @@ Windows 上经 koffi 轮询 Win32 `GetAsyncKeyState` 读取;macOS 上轮询 Core
 借了哪个就只画哪个按钮或菜单行(暂停要 `isPaused` 和 `setPaused`,设置要 `openSettings`,退出要 `quit` 与可选的 `quitLabel`);
 `onCreate` 拿到 World 实例,应用可以调 `world.confirm(问题, [同意, 不同意])` 弹一个两选项气泡,
 结果是 `yes` / `no` / `dismissed` / `timeout`(60 秒没人答) / `unavailable`(没有桌宠页),不会作为事件送给 bot。
+
+应用自己的一问一答(比如首次启动的引导)用 `world.dialog(步骤)`:Coo 在气泡里说一句,下面接一个输入组件,
+回答同样只交给调用方。组件有按钮行(可带一个反复演示按法的按键帽)、可试选的卡片(选中时 Coo 当场演示对应动作:站着、溜达、跑来跑去)、
+文本框(可以是密钥框,带一个外链和一个「以后再说」)、进度条(调用方用 `update({ progress })` 推进,`close()` 收起)。
+`step` 在气泡顶上画步骤点,`closable` 画一个关闭钮;页面不在时结果是 `{ unavailable: true }`,页面回来后调用方重发即可。
+`controls.guide` 借出后,控制台的 `pet.guide` 面板方法会调它,应用借此重放引导。
 
 ## 安装
 

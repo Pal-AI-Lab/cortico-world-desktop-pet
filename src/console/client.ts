@@ -55,7 +55,12 @@ const CODE_KEYS: Record<string, string> = {
   Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Pause: 'Pause', ScrollLock: 'ScrollLock',
 };
 const keyOfCode = (code: string): string | null =>
-  CODE_KEYS[code] ?? (/^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digitd$/.test(code) ? code.slice(5) : /^Fd{1,2}$/.test(code) ? code : null);
+  CODE_KEYS[code] ?? (/^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code : null);
+
+/** Longest pause between two presses of one key that still makes them one talk key (`TAP_GAP_MS` in src/asr/hotkey.ts). */
+const TAP_GAP_MS = 400;
+/** Most presses a talk key takes (`*3`). */
+const MAX_TAPS = 3;
 
 const MB = (n: number) => `${Math.round(n / 1048576)} MB`;
 const progress = (a: Artifact) => (a.total ? `${Math.round((a.done / a.total) * 100)}%` : MB(a.done));
@@ -274,12 +279,16 @@ const voicePanel: ConsolePanel = {
     modeSel.addEventListener('change', () => void call('setMic', [{ mode: modeSel.value }])());
     deviceSel.addEventListener('change', () => void call('setMic', [{ deviceId: deviceSel.value }])());
 
-    // The talk key is captured on the first release: every key down until then is part of it.
+    // The talk key is every key down until the first release. Pressed again within TAP_GAP_MS it
+    // becomes a key tapped first and then held (`LeftAlt*2`); the capture ends once the pause passes.
     let capturing = false;
     const held: string[] = [];
+    let combo = '', taps = 0, gapTimer: ReturnType<typeof setTimeout> | undefined;
     const finishCapture = (hotkey: string | null) => {
+      clearTimeout(gapTimer);
       capturing = false;
       held.length = 0;
+      combo = ''; taps = 0;
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('keyup', onKeyUp, true);
       window.removeEventListener('pointerdown', onPointer, true);
@@ -290,11 +299,23 @@ const voicePanel: ConsolePanel = {
       e.preventDefault(); e.stopPropagation();
       if (e.code === 'Escape') { finishCapture(null); return; }
       const k = keyOfCode(e.code);
-      if (k && !held.includes(k)) held.push(k);
+      if (!k) return;
+      clearTimeout(gapTimer);
+      // another key after a pause for a second press: the capture starts over with it
+      if (combo && !held.length && !combo.split('+').includes(k)) { combo = ''; taps = 0; }
+      if (!held.includes(k)) held.push(k);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       e.preventDefault(); e.stopPropagation();
-      if (held.length) finishCapture(held.join('+'));
+      if (!held.length) return;
+      const pressed = held.join('+');
+      held.length = 0;
+      taps = pressed === combo ? taps + 1 : 1;
+      combo = pressed;
+      const hotkey = taps > 1 ? `${combo}*${taps}` : combo;
+      if (taps >= MAX_TAPS) { finishCapture(hotkey); return; }
+      keyBtn.textContent = `${hotkey}…(再按一下就是连按)`;
+      gapTimer = setTimeout(() => finishCapture(hotkey), TAP_GAP_MS);
     };
     const onPointer = (e: PointerEvent) => {
       const k = ({ 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' } as Record<number, string>)[e.button];
@@ -305,7 +326,7 @@ const voicePanel: ConsolePanel = {
     keyBtn.addEventListener('click', () => {
       if (capturing) { finishCapture(null); return; }
       capturing = true;
-      keyBtn.textContent = '按下新的说话键…(Esc 取消)';
+      keyBtn.textContent = '按下新的说话键,可以是组合键或连按两下…(Esc 取消)';
       window.addEventListener('keydown', onKeyDown, true);
       window.addEventListener('keyup', onKeyUp, true);
       window.addEventListener('pointerdown', onPointer, true);

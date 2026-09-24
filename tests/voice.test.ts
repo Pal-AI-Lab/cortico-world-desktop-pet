@@ -14,7 +14,7 @@ import { DesktopPetWorld } from '../src/world.ts';
 import type { MicMode } from '../src/config.ts';
 import type { SherpaModule } from '../src/asr/funasr.ts';
 import type { ModelSpec } from '../src/runtime/store.ts';
-import { parseHotkey } from '../src/asr/hotkey.ts';
+import { parseHotkey, type Hotkey } from '../src/asr/hotkey.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 import { FakePage } from './helpers/page.ts';
 import { fakeSapi } from './helpers/fake-sapi.ts';
@@ -78,11 +78,12 @@ afterEach(async () => {
 
 /** A talk key the test presses; `problem` makes it unreadable. */
 function scriptedKey(problem?: string) {
-  const key = { press: (_down: boolean) => {}, codes: [] as number[] };
-  const watch = async (codes: number[], onChange: (down: boolean) => void) => {
+  const key = { press: (_down: boolean) => {}, tap: () => {}, hotkey: null as Hotkey | null };
+  const watch = async (hotkey: Hotkey, onChange: (down: boolean) => void, _pollMs: number, onTap?: (count: number) => void) => {
     if (problem) return problem;
-    key.codes = codes;
+    key.hotkey = hotkey;
     key.press = onChange;
+    key.tap = () => onTap?.(1);
     return { stop: () => {} };
   };
   return { key, watch };
@@ -133,10 +134,13 @@ describe('voice input', () => {
   it('hold: only audio while the talk key is down counts, and releasing the key ends the utterance', async () => {
     const { key, watch } = scriptedKey();
     const { host, page, world } = await setup('帮我看看这个', 'hold', watch);
-    expect(key.codes).toEqual(parseHotkey(DESKTOP_PET_DEFAULTS.asr.mic.hotkey));
+    expect(key.hotkey).toEqual(parseHotkey(DESKTOP_PET_DEFAULTS.asr.mic.hotkey));
     for (const fr of tone(600, .3)) page.audio(fr);
     await new Promise((r) => setTimeout(r, 200));
     expect((world.voiceState().counts as { utterances: number }).utterances).toBe(0);
+    // the quick tap before the held press: the pet perks up before it listens
+    key.tap();
+    await page.next((m) => m.t === 'listen' && m.phase === 'ready');
     key.press(true);
     await page.next((m) => m.t === 'listen' && m.phase === 'start');
     // quiet speech still counts while the key is held, pauses included

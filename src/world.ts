@@ -31,7 +31,7 @@ import { RuntimeStore, type ModelSpec } from './runtime/store.ts';
 import { FunAsrRecognizer, type FunAsrState, type SherpaModule } from './asr/funasr.ts';
 import { SystemRecognizer, systemRecognizerSupported, type SystemRecognizerState, type SystemSentence } from './asr/system-recognizer.ts';
 import { Packer, Segmenter, rmsDb, type SegmentConfig, type SegmentSink, type Utterance } from './asr/segmenter.ts';
-import { hotkeyLabel, parseHotkey, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
+import { comboLabel, hotkeyLabel, parseHotkey, splitTaps, watchHotkey, type KeyWatcher } from './asr/hotkey.ts';
 import { joinSpeech, looksHallucinated } from './asr/result.ts';
 import { toSimplified } from './asr/simplify.ts';
 import { estimateSeconds, parseActions, parseScript, vocabTable } from './script.ts';
@@ -70,6 +70,59 @@ export interface PetBotControls {
   quit?(): void;
   /** The power button's label, e.g. "退出 CortiCompanion". */
   quitLabel?: string;
+  /** Runs the embedding app's introduction again (the console's `pet.guide` panel method). */
+  guide?(): void;
+}
+
+/**
+ * One step of a conversation an embedding app holds through the pet's bubble (`dialog`): Coo says
+ * `text`, then shows `input`, if any, in the same bubble. `step` draws progress dots, `closable`
+ * a close button.
+ */
+export interface PetDialog {
+  text: string;
+  /** Expressions and motions (vocabulary words) played as the line starts. */
+  actions?: string[];
+  step?: [number, number];
+  closable?: boolean;
+  input?: PetDialogInput;
+}
+
+/**
+ * - `buttons`: a row of buttons, answered with the index; `keys` shows a key cap above them, pressed
+ *   `taps` times over and over, the last press held (a talk key tapped, then held).
+ * - `choices`: cards to try out before `confirm`, each with an optional level tag and icon (a pet-core
+ *   `ICONS` name); a card's `line` is typed when it is picked and
+ *   its `motion` played (standing still, strolling, running about) until another is picked.
+ * - `text`: a text box answered with the text; `secret` hides what is typed, `link` opens a page
+ *   in the browser, `alt` is a second way out, answered as `{ alt: true }`.
+ * - `progress`: a bar the app moves with `update({ progress })`; it ends when the app closes it.
+ */
+export type PetDialogInput =
+  | { kind: 'buttons'; options: Array<{ label: string; primary?: boolean }>; keys?: string; taps?: number }
+  | { kind: 'choices'; options: Array<{ label: string; level?: string; icon?: string; line?: string; motion?: 'still' | 'walk' | 'run' }>; value?: number; confirm: string }
+  | { kind: 'text'; submit: string; placeholder?: string; value?: string; secret?: boolean; maxLength?: number; link?: { label: string; url: string }; alt?: string }
+  | { kind: 'progress'; label?: string };
+
+/**
+ * How a step ended: a button or card (`index`), typed text, the text box's `alt`, the close
+ * button, the line read to the end with nothing to answer (`done`, also a progress step the app
+ * closed), or no pet page to show it on.
+ */
+export type PetDialogAnswer =
+  | { index: number } | { text: string } | { alt: true } | { closed: true } | { done: true } | { unavailable: true };
+
+/** What the app changes on a step while it is up: the line, and a progress step's bar (0–1, or null while there is no telling). */
+export interface PetDialogUpdate {
+  text?: string;
+  progress?: number | null;
+}
+
+export interface PetDialogHandle {
+  readonly answer: Promise<PetDialogAnswer>;
+  update(patch: PetDialogUpdate): void;
+  /** Takes the step off the bubble; an unanswered one resolves `done`. */
+  close(): void;
 }
 
 /** How a confirmation ended: one of the two choices, closed, no answer in time, or no pet page to ask on. */
@@ -126,6 +179,9 @@ interface PendingConfirm {
   timer: NodeJS.Timeout;
 }
 
+/** Characters a step's line is shown for per second (typing, then reading), for its time limit. */
+const DIALOG_CPS = 4;
+
 let seq = 0;
 const nextId = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toString(36)}`;
 const pct = (fraction: number) => `${Math.round(fraction * 100)}%`;
@@ -165,6 +221,7 @@ export class DesktopPetWorld implements World {
   private micState: { state: string; detail: string | null } = { state: 'off', detail: null };
   private devices: Array<{ id: string; label: string }> = [];
   private readonly confirms = new Map<string, PendingConfirm>();
+  private readonly dialogs = new Map<string, (a: PetDialogAnswer) => void>();
   /** The talk key is down (hold) or was switched on (toggle). */
   private talking = false;
   private keyWatcher: KeyWatcher | null = null;
@@ -230,6 +287,8 @@ export class DesktopPetWorld implements World {
     this.keyWatcher = null;
     for (const c of this.confirms.values()) { clearTimeout(c.timer); c.resolve('unavailable'); }
     this.confirms.clear();
+    for (const d of this.dialogs.values()) d({ unavailable: true });
+    this.dialogs.clear();
     for (const w of this.walks.values()) { clearTimeout(w.timer); w.resolve('World 已停止,没走到。'); }
     this.walks.clear();
     for (const s of this.voiceSockets) s.close('stopped');
@@ -424,6 +483,15 @@ export class DesktopPetWorld implements World {
         return;
       }
       case 'control': return this.onControl(String(msg.action));
+      case 'dialog': {
+        const settle = this.dialogs.get(String(msg.id));
+        if (!settle) return;
+        this.dialogs.delete(String(msg.id));
+        settle(typeof msg.index === 'number' ? { index: msg.index }
+          : typeof msg.text === 'string' ? { text: msg.text.slice(0, 2000) }
+          : msg.alt ? { alt: true } : msg.closed ? { closed: true } : { done: true });
+        return;
+      }
       case 'commit': return this.commitSpeech();
     }
   }
@@ -451,8 +519,38 @@ export class DesktopPetWorld implements World {
     });
   }
 
+  /**
+   * Shows one step of a conversation in the bubble; see `PetDialog`. Nothing reaches the bot: the
+   * caller gets the answer. Steps wait for as long as the person takes; a step with nothing to
+   * answer ends once its line has been read.
+   */
+  dialog(d: PetDialog): PetDialogHandle {
+    const id = nextId('d');
+    const { actions } = parseActions(d.actions ?? []);
+    let settle: (a: PetDialogAnswer) => void = () => {};
+    const answer = new Promise<PetDialogAnswer>((resolve) => { settle = resolve; });
+    if (!this.server.sendPet({ t: 'dialog', id, ...d, actions })) settle({ unavailable: true });
+    else this.dialogs.set(id, settle);
+    // a page that never reports back (a tab put to sleep) does not hold a line with nothing to answer forever
+    if (!d.input && this.dialogs.has(id)) {
+      const timer = setTimeout(() => this.dialogs.get(id)?.({ done: true }), 5000 + d.text.length / DIALOG_CPS * 1000);
+      void answer.finally(() => { clearTimeout(timer); this.dialogs.delete(id); });
+    }
+    return {
+      answer,
+      update: (patch) => { if (this.dialogs.has(id)) this.server.sendPet({ t: 'dialog-update', id, ...patch }); },
+      close: () => {
+        const s = this.dialogs.get(id);
+        this.dialogs.delete(id);
+        this.server.sendPet({ t: 'dialog-close', id });
+        s?.({ done: true });
+      },
+    };
+  }
+
   private onPageGone(): void {
     this.log?.info('桌宠页面断开');
+    for (const [id, d] of this.dialogs) { d({ unavailable: true }); this.dialogs.delete(id); }
     for (const [id, w] of this.walks) { clearTimeout(w.timer); w.resolve('没走到:桌宠窗口断开了。'); this.walks.delete(id); }
     for (const [id, c] of this.confirms) { clearTimeout(c.timer); c.resolve('unavailable'); this.confirms.delete(id); }
     this.segmenter.flush();
@@ -596,9 +694,9 @@ export class DesktopPetWorld implements World {
     this.hotkeyProblem = null;
     this.setTalking(false);
     if (!key) return;
-    const codes = parseHotkey(hotkey);
+    const parsed = parseHotkey(hotkey);
     const watch = this.opts.watchHotkey ?? watchHotkey;
-    const watcher = codes ? await watch(codes, (down) => this.onTalkKey(down), HOTKEY_POLL_MS) : `认不出按键「${hotkey}」`;
+    const watcher = parsed ? await watch(parsed, (down) => this.onTalkKey(down), HOTKEY_POLL_MS, () => this.onTalkTap()) : `认不出按键「${hotkey}」`;
     if (key !== this.hotkeyKey) { if (typeof watcher !== 'string') watcher.stop(); return; }
     if (typeof watcher === 'string') {
       this.hotkeyProblem = watcher;
@@ -609,9 +707,18 @@ export class DesktopPetWorld implements World {
 
   /** One line telling the person how to be heard. */
   private talkHint(): string {
-    const key = hotkeyLabel(this.cfg.asr.mic.hotkey);
+    const { hotkey } = this.cfg.asr.mic;
+    const key = comboLabel(hotkey), { taps } = splitTaps(hotkey);
     const mode = this.micMode();
-    return mode === 'hold' ? `按住 ${key} 说话` : mode === 'toggle' ? `按一下 ${key} 开始听,再按一下停` : '一直在听,直接说话';
+    if (mode === 'always') return '一直在听,直接说话';
+    if (mode === 'toggle') return taps > 1 ? `${hotkeyLabel(hotkey)} 开始听,再${taps === 2 ? '双击' : '三击'}停` : `按一下 ${key} 开始听,再按一下停`;
+    return taps > 1 ? `快速按${taps === 2 ? '一' : '两'}下 ${key},紧接着按住说话,松开就发出去` : `按住 ${key} 说话,松开就发出去`;
+  }
+
+  /** A quick tap before the held press: the pet perks up, so the hold that follows feels answered at once. */
+  private onTalkTap(): void {
+    if (this.talking || !this.cfg.asr.enabled || !this.micWanted()) return;
+    this.server.sendPet({ t: 'listen', phase: 'ready' });
   }
 
   private onTalkKey(down: boolean): void {
@@ -949,6 +1056,11 @@ export class DesktopPetWorld implements World {
         case 'openWindow': this.openWindow(); return this.petState();
         case 'closeWindow': await this.windowHost?.stop(); return this.petState();
         case 'installElectron': void this.store.electron.install(); return this.petState();
+        case 'guide': {
+          if (!this.opts.controls?.guide) throw new Error('这个应用没有引导');
+          this.opts.controls.guide();
+          return this.petState();
+        }
       }
     }
     if (panel === 'voice') {
@@ -1009,6 +1121,9 @@ export class DesktopPetWorld implements World {
         ...this.cfg.asr.mic,
         effectiveMode: this.micMode(),
         hotkeyLabel: hotkeyLabel(this.cfg.asr.mic.hotkey),
+        /** The keys alone, and how many presses (the last one held): for a key cap that shows the taps. */
+        keyLabel: comboLabel(this.cfg.asr.mic.hotkey),
+        taps: splitTaps(this.cfg.asr.mic.hotkey).taps,
         hint: this.talkHint(),
         hotkeyProblem: this.hotkeyProblem,
         open: this.gateOpen(),

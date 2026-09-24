@@ -242,6 +242,52 @@ describe('with a pet page', () => {
     expect(host.events).toHaveLength(0);
   });
 
+  it('dialog steps resolve from the bubble without an event to the bot', async () => {
+    const { world, host } = await mounted();
+    expect(await world.dialog({ text: '在吗?' }).answer).toEqual({ unavailable: true });
+    const page = await FakePage.open(origin(world));
+    cleanup.push(() => page.close());
+
+    const name = world.dialog({ text: '怎么称呼你?', actions: ['思考', '不存在'], step: [1, 5], closable: true, input: { kind: 'text', submit: '好' } });
+    const d1 = await page.next((m) => m.t === 'dialog');
+    // vocabulary words arrive as ids, unknown ones are left out
+    expect(d1).toMatchObject({ text: '怎么称呼你?', actions: ['thinking'], step: [1, 5], closable: true, input: { kind: 'text' } });
+    page.send({ t: 'dialog', id: d1.id, text: '小明' });
+    expect(await name.answer).toEqual({ text: '小明' });
+
+    const pick = world.dialog({ text: '选一个', input: { kind: 'buttons', options: [{ label: 'A' }, { label: 'B' }] } });
+    page.send({ t: 'dialog', id: (await page.next((m) => m.t === 'dialog')).id, index: 1 });
+    expect(await pick.answer).toEqual({ index: 1 });
+
+    const closed = world.dialog({ text: '跳过?', closable: true, input: { kind: 'text', submit: '好', alt: '算了' } });
+    page.send({ t: 'dialog', id: (await page.next((m) => m.t === 'dialog')).id, closed: true });
+    expect(await closed.answer).toEqual({ closed: true });
+
+    // a progress step moves with update and ends when the app closes it
+    const bar = world.dialog({ text: '下载中', input: { kind: 'progress' } });
+    const d4 = await page.next((m) => m.t === 'dialog');
+    bar.update({ progress: .5 });
+    expect(await page.next((m) => m.t === 'dialog-update')).toMatchObject({ id: d4.id, progress: .5 });
+    bar.close();
+    expect(await page.next((m) => m.t === 'dialog-close')).toMatchObject({ id: d4.id });
+    expect(await bar.answer).toEqual({ done: true });
+
+    const gone = world.dialog({ text: '还在吗?', input: { kind: 'buttons', options: [{ label: '在' }] } });
+    await page.next((m) => m.t === 'dialog');
+    await page.close();
+    expect(await gone.answer).toEqual({ unavailable: true });
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('the pet panel runs the app\'s introduction when the app lends one', async () => {
+    let runs = 0;
+    const { world } = await mounted(undefined, { controls: { guide: () => { runs++; } } });
+    await world.console().invoke!('pet', 'guide', []);
+    expect(runs).toBe(1);
+    const bare = await mounted();
+    await expect(bare.world.console().invoke!('pet', 'guide', [])).rejects.toThrow('没有引导');
+  });
+
   it('the menu header carries the bot and its run controls; clicks reach them', async () => {
     const calls: string[] = [];
     let paused = false;
