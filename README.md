@@ -8,7 +8,7 @@
 </p>
 
 [Cortico](https://github.com/Pal-AI-Lab/Cortico) 的桌宠 World,一个独立的扩展包。
-[CortiCompanion](https://github.com/Pal-AI-Lab/CortiCompanion) 桌面上的 Coo 就是它。
+[Coopanion](https://github.com/Pal-AI-Lab/Coopanion) 桌面上的 Coo 就是它。
 
 bot 在屏幕底边有一个小身体:C 形的身体,两只 0 形的眼睛,两条短腿。它用气泡说话、用选项提问、
 沿屏幕底边走动、做表情和动作;人可以对它说话(FunASR 在本机识别,Windows 上也可用系统自带的识别)、打字、点选项、戳它、摸它、

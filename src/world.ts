@@ -68,7 +68,7 @@ export interface PetBotControls {
   /** Shows the embedding app's own dress page; the menu's 「装扮」 then opens it instead of the pet's dress window. */
   openDress?(): void;
   quit?(): void;
-  /** The power button's label, e.g. "退出 CortiCompanion". */
+  /** The power button's label, e.g. "退出 Coopanion". */
   quitLabel?: string;
   /** Runs the embedding app's introduction again (the console's `pet.guide` panel method). */
   guide?(): void;
